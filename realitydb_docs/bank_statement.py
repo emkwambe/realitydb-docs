@@ -126,7 +126,8 @@ def _money(value: float) -> float:
 def _build_month(rng: random.Random, year: int, month: int,
                  beginning_balance: float,
                  monthly_income: float,
-                 employer: str) -> MonthStatement:
+                 employer: str,
+                 debt_to_income_target: Optional[float] = None) -> MonthStatement:
     """Build one month of transactions with a non-negative running balance."""
     days_in_month = calendar.monthrange(year, month)[1]
     entries: List[Transaction] = []
@@ -159,8 +160,26 @@ def _build_month(rng: random.Random, year: int, month: int,
         ("insurance", rng.choice(["AUTO INSURANCE", "RENTERS INS"]), rng.uniform(100, 400)),
         ("student", "STUDENT LOAN PMT", rng.uniform(200, 800)),
     ]
-    n_recurring = rng.randint(4, 7)
-    chosen = rng.sample(recurring_pool, n_recurring)
+    if debt_to_income_target is not None:
+        # Deterministic debt load: the loan-bearing obligations (auto and
+        # student loan) are sized to a share of monthly income instead of
+        # being drawn independently, so a packet's DTI is predictable.
+        # Everything else stays random but does not affect DTI — utilities,
+        # phone, internet, subscriptions and insurance are not loan payments,
+        # and housing is reconciled from the loan application.
+        target_total = monthly_income * debt_to_income_target
+        loan_items = [
+            ("auto", "AUTO LOAN PMT", target_total * 0.60),
+            ("student", "STUDENT LOAN PMT", target_total * 0.40),
+        ]
+        non_loan_pool = [item for item in recurring_pool
+                         if item[0] not in ("auto", "student")]
+        chosen = loan_items + rng.sample(non_loan_pool,
+                                         rng.randint(2, len(non_loan_pool)))
+    else:
+        n_recurring = rng.randint(4, 7)
+        chosen = rng.sample(recurring_pool, n_recurring)
+
     for _, desc, amount in chosen:
         day = rng.randint(2, min(28, days_in_month))
         entries.append(Transaction(
@@ -224,7 +243,8 @@ def _build_month(rng: random.Random, year: int, month: int,
 
 def _build_statement_data(rng: random.Random, style: str,
                           annual_income: Optional[float],
-                          year: int, month_1: int, month_2: int) -> BankStatementData:
+                          year: int, month_1: int, month_2: int,
+                          debt_to_income_target: Optional[float] = None) -> BankStatementData:
     cfg = STYLES[style]
 
     holder = f"{rng.choice(FIRST_NAMES)} {rng.choice(LAST_NAMES)}"
@@ -241,8 +261,10 @@ def _build_statement_data(rng: random.Random, style: str,
 
     beginning = _money(monthly_income * rng.uniform(1.5, 3.0))
 
-    m1 = _build_month(rng, year, month_1, beginning, monthly_income, employer)
-    m2 = _build_month(rng, year, month_2, m1.ending_balance, monthly_income, employer)
+    m1 = _build_month(rng, year, month_1, beginning, monthly_income, employer,
+                      debt_to_income_target)
+    m2 = _build_month(rng, year, month_2, m1.ending_balance, monthly_income, employer,
+                      debt_to_income_target)
 
     return BankStatementData(
         bank_name=cfg["bank_name"],
@@ -452,6 +474,7 @@ def generate_synthetic_bank_statement(
     statement_year: int = 2024,
     statement_month_1: int = 10,
     statement_month_2: int = 11,
+    debt_to_income_target: float = None,
 ) -> str:
     """
     Generate a 2-month bank statement PDF.
@@ -466,6 +489,11 @@ def generate_synthetic_bank_statement(
       statement_year: year for statements
       statement_month_1: first month (1-12)
       statement_month_2: second month (1-12)
+      debt_to_income_target: if provided, the loan-bearing recurring debts
+        (auto loan + student loan) are sized to this share of monthly income
+        rather than drawn at random — e.g. 0.07 puts roughly 7% of monthly
+        income into loan payments. Use it when a downstream DTI calculation
+        needs to be predictable. Requires annual_income to be meaningful.
 
     Returns:
       output_path (the saved file)
@@ -478,7 +506,8 @@ def generate_synthetic_bank_statement(
 
     rng = random.Random(seed)
     data = _build_statement_data(rng, style, annual_income,
-                                 statement_year, statement_month_1, statement_month_2)
+                                 statement_year, statement_month_1, statement_month_2,
+                                 debt_to_income_target)
     renderer = BankStatementRenderer(style=style)
     return renderer.render(data, output_path)
 
@@ -489,6 +518,7 @@ def generate_synthetic_bank_statement_batch(
     seed_start: int = 42,
     annual_incomes: list = None,
     style: str = None,
+    debt_to_income_target: float = None,
 ) -> list:
     """
     Generate multiple bank statements.
@@ -499,6 +529,8 @@ def generate_synthetic_bank_statement_batch(
       seed_start: first seed (increments per doc)
       annual_incomes: list of target incomes (one per statement, for W-2 matching)
       style: if None, randomly varies style across corporate/regional/digital
+      debt_to_income_target: share of monthly income placed into loan-bearing
+        recurring debts; see generate_synthetic_bank_statement()
 
     Returns:
       list of output file paths
@@ -522,6 +554,7 @@ def generate_synthetic_bank_statement_batch(
             seed=seed,
             style=this_style,
             annual_income=income,
+            debt_to_income_target=debt_to_income_target,
         )
         paths.append(path)
         income_note = f" | target ${income:,.0f}" if income else ""
