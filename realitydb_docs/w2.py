@@ -45,9 +45,10 @@ class W2Renderer:
 
         # ─── Header ───
         c.setFont("Helvetica-Bold", 14)
-        c.drawString(50, self.height - 50, f"W-2 Wage and Tax Statement {data.year}")
+        c.drawString(50, self.height - 50, f"{data.year} W-2 Wage and Tax Statement")
         c.setFont("Helvetica", 8)
-        c.drawString(50, self.height - 65, "Copy A — For Social Security Administration")
+        c.drawString(50, self.height - 65, f"For calendar year {data.year}")
+        c.drawString(50, self.height - 75, "Copy A — For Social Security Administration")
 
         if data.control_number:
             c.drawRightString(self.width - 50, self.height - 50, f"Control #: {data.control_number}")
@@ -156,8 +157,26 @@ class W2Renderer:
             c.line(x, y, x + 1, y)
 
 
-def generate_synthetic_w2_batch(count: int = 10, output_dir: str = "output"):
-    """Generate a batch of synthetic W-2s with realistic data."""
+def generate_synthetic_w2_batch(
+    count: int = 10,
+    output_dir: str = "output",
+    seed: int = 42,
+    tax_year: int = 2024,
+    target_annual_income: float = None,
+):
+    """Generate a batch of synthetic W-2s with realistic data.
+
+    Args:
+      count: number of W-2s to generate
+      output_dir: directory for output files
+      seed: random seed (deterministic)
+      tax_year: calendar year printed on the form
+      target_annual_income: if provided, Box 1 wages land within +/-3% of
+        this figure — realistic year-to-year drift — so the W-2 agrees with
+        the income stated on a loan application. If omitted, wages are drawn
+        at random from $28,000-$180,000 as before.
+    """
+    rng = random.Random(seed)
     renderer = W2Renderer(output_dir=output_dir)
     employers = [
         ("Acme Corporation", "12-3456789"),
@@ -172,32 +191,35 @@ def generate_synthetic_w2_batch(count: int = 10, output_dir: str = "output"):
 
     files = []
     for i in range(count):
-        emp_name, emp_ein = random.choice(employers)
-        fname = random.choice(first_names)
-        lname = random.choice(last_names)
+        emp_name, emp_ein = rng.choice(employers)
+        fname = rng.choice(first_names)
+        lname = rng.choice(last_names)
 
-        wages = round(random.uniform(28000, 180000), 2)
+        if target_annual_income:
+            wages = round(target_annual_income * rng.uniform(0.97, 1.03), 2)
+        else:
+            wages = round(rng.uniform(28000, 180000), 2)
         ss_wages = min(wages, 160200)  # 2023 SS cap
 
         data = W2Data(
             employer_name=emp_name,
             employer_ein=emp_ein,
             employee_name=f"{fname} {lname}",
-            employee_ssn=f"{random.randint(100,999):03d}-{random.randint(10,99):02d}-{random.randint(1000,9999):04d}",
+            employee_ssn=f"{rng.randint(900,999):03d}-{rng.randint(10,99):02d}-{rng.randint(1000,9999):04d}",
             wages_box_1=wages,
-            federal_tax_box_2=round(wages * random.uniform(0.12, 0.22), 2),
+            federal_tax_box_2=round(wages * rng.uniform(0.12, 0.22), 2),
             ss_wages_box_3=ss_wages,
             ss_tax_box_4=round(ss_wages * 0.062, 2),
             medicare_wages_box_5=wages,
             medicare_tax_box_6=round(wages * 0.0145, 2),
             state_wages_box_16=wages,
-            state_tax_box_17=round(wages * random.uniform(0.03, 0.07), 2),
-            year=random.choice([2022, 2023, 2024]),
-            control_number=f"{random.randint(100000,999999)}"
+            state_tax_box_17=round(wages * rng.uniform(0.03, 0.07), 2),
+            year=tax_year,
+            control_number=f"{rng.randint(100000,999999)}"
         )
 
         # Mix of clean and noisy
-        add_noise = random.random() < 0.3
+        add_noise = rng.random() < 0.3
         filename = f"w2_{i+1:03d}_{'noisy' if add_noise else 'clean'}.pdf"
         path = renderer.render(data, filename, add_noise=add_noise)
         files.append(path)
