@@ -10,10 +10,97 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from realitydb_docs.w2 import generate_synthetic_w2_batch
 from realitydb_docs.bank_statement import generate_synthetic_bank_statement_batch
+from realitydb_docs.loan_app import generate_loan_application_batch
+
+# Subcommands understood by main(). Anything else falls through to the
+# original flat-flag interface (--w2-count/--bank-count), which shipped
+# first and is still used by scripts, so it must keep working.
+SUBCOMMANDS = ("loan-app", "w2", "bank-statement")
+
+
+def _loan_app_command(argv):
+    """`cli.py loan-app --count N ...`"""
+    parser = argparse.ArgumentParser(
+        prog="cli.py loan-app",
+        description="Generate Fannie Mae 1003 loan application PDFs.",
+    )
+    parser.add_argument("--count", type=int, default=1)
+    parser.add_argument("--output", "--output-dir", dest="output", default="output")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--annual-income", type=float, default=None,
+                        help="applies to every document (+/-2%% variation)")
+    parser.add_argument("--loan-amount", type=float, default=None)
+    parser.add_argument("--property-value", type=float, default=None)
+    parser.add_argument("--dti-target", type=float, default=None,
+                        help="target debt-to-income ratio, e.g. 0.36")
+    parser.add_argument("--credit-score", type=int, default=None)
+    parser.add_argument("--monthly-housing-payment", type=float, default=None)
+    args = parser.parse_args(argv)
+
+    def as_list(v):
+        return None if v is None else [v]
+
+    paths = generate_loan_application_batch(
+        count=args.count,
+        output_dir=args.output,
+        seed_start=args.seed,
+        annual_incomes=as_list(args.annual_income),
+        loan_amounts=as_list(args.loan_amount),
+        property_values=as_list(args.property_value),
+        debt_to_income_targets=as_list(args.dti_target),
+        credit_scores=as_list(args.credit_score),
+        monthly_housing_payments=as_list(args.monthly_housing_payment),
+    )
+    for p in paths:
+        print(f"  Generated: {p}")
+    print(f"\n{len(paths)} loan application(s) in {os.path.abspath(args.output)}")
+    return paths
+
+
+def _w2_command(argv):
+    """`cli.py w2 --count N ...`"""
+    parser = argparse.ArgumentParser(prog="cli.py w2")
+    parser.add_argument("--count", type=int, default=1)
+    parser.add_argument("--output", "--output-dir", dest="output", default="output")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--annual-income", type=float, default=None)
+    args = parser.parse_args(argv)
+    return generate_synthetic_w2_batch(
+        count=args.count, output_dir=args.output, seed=args.seed,
+        target_annual_income=args.annual_income,
+    )
+
+
+def _bank_statement_command(argv):
+    """`cli.py bank-statement --count N ...`"""
+    parser = argparse.ArgumentParser(prog="cli.py bank-statement")
+    parser.add_argument("--count", type=int, default=1)
+    parser.add_argument("--output", "--output-dir", dest="output", default="output")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--annual-income", type=float, default=None)
+    parser.add_argument("--dti-target", type=float, default=None)
+    args = parser.parse_args(argv)
+    return generate_synthetic_bank_statement_batch(
+        count=args.count, output_dir=args.output, seed_start=args.seed,
+        annual_incomes=[args.annual_income] if args.annual_income else None,
+        debt_to_income_target=args.dti_target,
+    )
+
 
 def main():
+    # Subcommand form takes precedence; without one, the legacy flat form runs.
+    if len(sys.argv) > 1 and sys.argv[1] in SUBCOMMANDS:
+        command, argv = sys.argv[1], sys.argv[2:]
+        if command == "loan-app":
+            return _loan_app_command(argv)
+        if command == "w2":
+            return _w2_command(argv)
+        return _bank_statement_command(argv)
+
     parser = argparse.ArgumentParser(
-        description="Generate a synthetic document set for PacketWise testing."
+        description="Generate a synthetic document set for PacketWise testing.",
+        epilog="Subcommands: w2 | bank-statement | loan-app "
+               "(e.g. `cli.py loan-app --count 3 --output output/`)",
     )
     parser.add_argument("--output-dir", default="output",
                         help="directory for generated PDFs (default: output)")
@@ -21,6 +108,10 @@ def main():
                         help="number of W-2s to generate (default: 20)")
     parser.add_argument("--bank-count", type=int, default=10,
                         help="number of bank statements to generate (default: 10)")
+    parser.add_argument("--loan-app-count", type=int, default=0,
+                        help="number of loan applications to generate "
+                             "(default: 0 — use the `loan-app` subcommand for "
+                             "the full set of 1003 options)")
     parser.add_argument("--seed", type=int, default=42,
                         help="base random seed (default: 42)")
     parser.add_argument("--annual-income", type=float, default=None,
@@ -53,12 +144,24 @@ def main():
         annual_incomes=[args.annual_income] if args.annual_income else None,
     )
 
-    # 3. Summary
+    # 3. Loan Applications (opt-in)
+    loan_files = []
+    if args.loan_app_count:
+        print(f"\n[3/3] Generating {args.loan_app_count} Loan Applications...")
+        loan_files = generate_loan_application_batch(
+            count=args.loan_app_count,
+            output_dir=output_dir,
+            seed_start=args.seed,
+            annual_incomes=[args.annual_income] if args.annual_income else None,
+        )
+
+    # 4. Summary
     print("\n" + "=" * 60)
     print("DATASET SUMMARY")
     print("=" * 60)
     print(f"W-2 Forms:        {len(w2_files)}")
     print(f"Bank Statements:  {len(bank_files)}")
+    print(f"Loan Apps:        {len(loan_files)}")
     print(f"Output directory: {os.path.abspath(output_dir)}")
     print("\nDone! Use these files to test PacketWise IDP pipeline.")
 
