@@ -128,6 +128,14 @@ class W2Renderer:
         c.save()
         return filepath
 
+    def _draw_form_outline(self, c):
+        """Draw the outer border of the W-2 form."""
+        c.setStrokeColorRGB(0, 0, 0)
+        c.setLineWidth(1.5)
+        c.rect(40, 30, self.width - 80, self.height - 60, stroke=1, fill=0)
+        c.setLineWidth(0.5)
+        c.line(40, self.height - 80, self.width - 40, self.height - 80)
+
     def _draw_box(self, c, x, y, w, h, label):
         """Draw a labeled box."""
         c.setStrokeColorRGB(0, 0, 0)
@@ -202,3 +210,4 @@ if __name__ == "__main__":
     print("Generating synthetic W-2 batch...")
     files = generate_synthetic_w2_batch(count=20, output_dir="output")
     print(f"\nDone. {len(files)} W-2s generated in output/")
+
