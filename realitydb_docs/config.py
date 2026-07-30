@@ -80,6 +80,36 @@ CONFIG_FILES = (
     "documents.yaml",
 )
 
+# Top-level keys each config file must define.
+#
+# Sprint 8 shipped without this: a typo in a key surfaced as a KeyError deep
+# inside a renderer, naming neither the file nor the key. Checking at load time
+# turns that into one error that names both.
+#
+# The check runs against whichever file actually won the search path, so an
+# override directory supplying its own scenarios.yaml must supply a COMPLETE
+# one. Fallback is per file, not per key: a scenarios.yaml carrying `scenarios`
+# but no `alignment_classes` previously made cli.list_alignments() return an
+# empty list silently, which is the failure this is meant to catch.
+REQUIRED_KEYS = {
+    "financial.yaml": [
+        "tax_year", "fica", "withholding",
+        "retirement", "pay_periods",
+        "underwriting", "ssn",
+    ],
+    "distributions.yaml": [
+        "income", "assets", "loan",
+        "employment", "borrower", "transactions",
+    ],
+    "scenarios.yaml": [
+        "scenarios", "alignment_classes",
+    ],
+    "documents.yaml": [
+        "watermark", "colors", "fonts",
+        "margins", "footer",
+    ],
+}
+
 
 def config_search_path() -> List[Path]:
     """Directories searched for a config file, highest priority first.
@@ -127,6 +157,19 @@ class _Config:
                     raise ValueError(
                         f"Config file {path} did not parse to a mapping "
                         f"(got {type(data).__name__})."
+                    )
+                missing = [
+                    key for key in REQUIRED_KEYS.get(filename, [])
+                    if key not in data
+                ]
+                if missing:
+                    raise ValueError(
+                        f"Config {filename} missing required keys: "
+                        f"{missing}\n"
+                        f"Loaded from: {path}\n"
+                        f"A config file that wins the search path must be "
+                        f"complete; fallback to the bundled defaults is per "
+                        f"file, not per key."
                     )
                 return data
         locations = "\n".join(f"  {d}" for d in searched)

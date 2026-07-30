@@ -737,3 +737,485 @@ def test_paystub_no_text_outside_page(seed, generator, tmp_path):
                 )
     finally:
         doc.close()
+
+
+# ── Config wiring ─────────────────────────────────────────
+#
+# Sprint 8 closed with a gap: "no test asserts config wiring. If someone
+# reverts a cfg. reference to a literal, all 419 tests still pass." The three
+# tests below close it from both directions — the first two catch a literal
+# that has drifted from the YAML, the third catches a literal that has not.
+
+
+@pytest.mark.consistency
+def test_config_ss_rate_is_consulted():
+    """
+    Verify that the SS withholding on a profile is computed from
+    cfg.ss_rate / cfg.ss_wage_base rather than from a literal that has
+    drifted away from config/financial.yaml.
+
+    NOTE ON BASIS: Social Security wages are GROSS, not W-2 box 1. A pre-tax
+    401(k) deferral is exempt from income tax but not from FICA, so boxes 3
+    and 5 exceed box 1 by the deferral. Asserting against box 1 here would
+    fail by $164.76 at seed 42 and would re-assert the accounting error
+    Sprint 6 fixed.
+    """
+    from realitydb_docs.config import cfg
+    from realitydb_docs.profile import FinancialCaseGenerator
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=87000,
+        loan_amount=320000,
+        property_value=420000,
+    )
+
+    expected_ss = (
+        min(profile.annual_gross_income, cfg.ss_wage_base)
+        * cfg.ss_rate
+    )
+
+    assert abs(
+        profile.w2_box4_ss_withheld - expected_ss
+    ) < 0.01, (
+        f"SS withholding {profile.w2_box4_ss_withheld:.2f} "
+        f"does not match cfg.ss_rate {cfg.ss_rate} "
+        f"computation {expected_ss:.2f}. "
+        f"Config may not be consulted."
+    )
+
+
+@pytest.mark.consistency
+def test_config_scenario_drives_dti():
+    """
+    Verify that scenario parameters from config drive DTI generation.
+    """
+    from realitydb_docs.config import cfg
+    from realitydb_docs.profile import FinancialCaseGenerator
+
+    gen = FinancialCaseGenerator()
+    scenario = cfg.get_scenario("approved")
+
+    profile = gen.generate(
+        seed=42,
+        annual_income=scenario["annual_income"],
+        loan_amount=scenario["loan_amount"],
+        property_value=scenario["property_value"],
+        dti_target=scenario["dti_target"],
+    )
+
+    target = scenario["dti_target"]
+    assert abs(profile.dti_ratio - target) <= 0.03, (
+        f"DTI {profile.dti_ratio:.3f} not within "
+        f"3% of config target {target}"
+    )
+
+
+@pytest.mark.consistency
+def test_config_override_actually_propagates(tmp_path):
+    """
+    Change a value in YAML; the generated profile must move.
+
+    The two tests above compare the code against cfg, so they catch a literal
+    that has drifted from the YAML — but a literal equal to the YAML passes
+    them just as well. This one edits the config and asserts the output
+    changes, which is the only form that proves the file is read.
+
+    Runs in a subprocess because profile.SS_WAGE_BASE and friends are
+    snapshotted at import; cfg.reload() deliberately does not move them, so an
+    in-process override would prove nothing.
+    """
+    import json
+    import subprocess
+    import sys
+
+    import yaml
+
+    from realitydb_docs.config import DEFAULT_CONFIG_DIR
+
+    with open(DEFAULT_CONFIG_DIR / "financial.yaml", encoding="utf-8") as fh:
+        financial = yaml.safe_load(fh)
+
+    financial["tax_year"] = 2099
+    financial["fica"]["ss_rate"] = 0.05
+    financial["fica"]["ss_wage_base"] = 999999
+
+    override = tmp_path / "config"
+    override.mkdir()
+    with open(override / "financial.yaml", "w", encoding="utf-8") as fh:
+        yaml.safe_dump(financial, fh)
+
+    script = (
+        "import json;"
+        "from realitydb_docs.profile import FinancialCaseGenerator;"
+        "p=FinancialCaseGenerator().generate("
+        "seed=42, annual_income=87000, loan_amount=320000,"
+        " property_value=420000);"
+        "print(json.dumps({'tax_year': p.tax_year,"
+        " 'ss': round(p.w2_box4_ss_withheld, 2),"
+        " 'gross': round(p.annual_gross_income, 2)}))"
+    )
+    env = dict(os.environ, REALITYDB_CONFIG_DIR=str(override))
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, env=env,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    )
+    assert proc.returncode == 0, (
+        f"override run failed:\n{proc.stderr}"
+    )
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert out["tax_year"] == 2099, (
+        f"tax_year {out['tax_year']} did not follow the override — "
+        f"config/financial.yaml is not being consulted"
+    )
+    expected = round(out["gross"] * 0.05, 2)
+    assert abs(out["ss"] - expected) < 0.01, (
+        f"SS withheld {out['ss']} did not follow the overridden "
+        f"ss_rate 0.05 (expected {expected}) — the rate is hardcoded"
+    )
+
+
+@pytest.mark.consistency
+def test_config_missing_required_key_is_rejected(tmp_path):
+    """An incomplete config file must fail at load, naming file and keys."""
+    import yaml
+
+    from realitydb_docs.config import _Config
+
+    override = tmp_path / "config"
+    override.mkdir()
+    with open(override / "scenarios.yaml", "w", encoding="utf-8") as fh:
+        yaml.safe_dump({"scenarios": {}}, fh)   # alignment_classes missing
+
+    os.environ["REALITYDB_CONFIG_DIR"] = str(override)
+    try:
+        with pytest.raises(ValueError) as excinfo:
+            _Config().list_scenarios()
+    finally:
+        del os.environ["REALITYDB_CONFIG_DIR"]
+
+    message = str(excinfo.value)
+    assert "scenarios.yaml" in message
+    assert "alignment_classes" in message
+
+
+# ── Timeline engine (Sprint 9) ────────────────────────────
+
+
+@pytest.mark.consistency
+def test_timeline_state_at_is_deterministic():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import career_growth_timeline
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=72000,
+        loan_amount=320000,
+        property_value=420000,
+    )
+
+    timeline = career_growth_timeline(profile, months=18)
+
+    state_a = timeline.state_at(18)
+    state_b = timeline.state_at(18)
+
+    assert state_a.annual_gross_income == state_b.annual_gross_income, (
+        "state_at() is not deterministic"
+    )
+    assert state_a.dti_ratio == state_b.dti_ratio, (
+        "DTI not deterministic across calls"
+    )
+
+
+@pytest.mark.consistency
+def test_timeline_does_not_mutate_starting_profile():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import career_growth_timeline
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=72000,
+        loan_amount=320000,
+        property_value=420000,
+    )
+
+    original_income = profile.annual_gross_income
+    original_employer = profile.employer_name
+
+    timeline = career_growth_timeline(profile, months=18)
+
+    _ = timeline.state_at(18)
+    _ = timeline.state_at(12)
+    _ = timeline.state_at(6)
+
+    assert profile.annual_gross_income == original_income, (
+        "state_at() mutated the starting profile income"
+    )
+    assert profile.employer_name == original_employer, (
+        "state_at() mutated the starting profile employer"
+    )
+
+
+@pytest.mark.consistency
+def test_timeline_events_are_ordered():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        BorrowerTimeline,
+        EventType,
+        LifeEvent,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=72000,
+        loan_amount=320000,
+        property_value=420000,
+    )
+
+    tl = BorrowerTimeline(profile, months=18)
+
+    tl.add_event(LifeEvent(
+        month=12,
+        event_type=EventType.RAISE,
+        description="Late raise",
+        params={"income_increase_pct": 0.05},
+    ))
+    tl.add_event(LifeEvent(
+        month=3,
+        event_type=EventType.PROMOTION,
+        description="Early promotion",
+        params={"income_increase_pct": 0.20},
+    ))
+
+    months = [e.month for e in tl.events]
+    assert months == sorted(months), (
+        f"Events not sorted: {months}"
+    )
+
+
+@pytest.mark.consistency
+def test_promotion_increases_income():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        BorrowerTimeline,
+        EventType,
+        LifeEvent,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=72000,
+        loan_amount=320000,
+        property_value=420000,
+    )
+
+    tl = BorrowerTimeline(profile, months=18)
+    tl.add_event(LifeEvent(
+        month=6,
+        event_type=EventType.PROMOTION,
+        description="Test promotion",
+        params={"income_increase_pct": 0.20},
+    ))
+
+    before = tl.state_at(5).annual_gross_income
+    after = tl.state_at(6).annual_gross_income
+
+    assert after > before, "Promotion did not increase income"
+    assert abs(after / before - 1.20) < 0.01, (
+        f"Income increase {after/before:.2%} "
+        f"not close to expected 20%"
+    )
+
+
+@pytest.mark.consistency
+def test_car_purchase_increases_debt():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        BorrowerTimeline,
+        EventType,
+        LifeEvent,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=72000,
+        loan_amount=320000,
+        property_value=420000,
+    )
+
+    tl = BorrowerTimeline(profile, months=18)
+    payment = 449.0
+    tl.add_event(LifeEvent(
+        month=6,
+        event_type=EventType.CAR_PURCHASE,
+        description="Test car purchase",
+        params={"monthly_payment": payment},
+    ))
+
+    before = tl.state_at(5).total_monthly_debt
+    after = tl.state_at(6).total_monthly_debt
+
+    assert abs((after - before) - payment) < 0.01, (
+        f"Car purchase debt increase {after-before:.2f} "
+        f"not equal to payment {payment}"
+    )
+
+
+@pytest.mark.consistency
+def test_fraud_timeline_has_fraud_flags(tmp_path):
+    import json
+
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        TimelineCaseBundler,
+        income_inflation_fraud_timeline,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=57600,
+        loan_amount=450000,
+        property_value=500000,
+        dti_target=0.55,
+        scenario="rejected",
+    )
+
+    timeline = income_inflation_fraud_timeline(profile, months=18)
+
+    fraud_events = [e for e in timeline.events if e.fraud_flag]
+    assert len(fraud_events) > 0, "Fraud timeline has no fraud flags"
+
+    bundler = TimelineCaseBundler()
+    case_dir = bundler.generate_timeline_case(
+        timeline=timeline,
+        output_dir=str(tmp_path),
+    )
+
+    with open(
+        os.path.join(case_dir, "evaluation", "causal_evidence.json"),
+        encoding="utf-8",
+    ) as fh:
+        evidence = json.load(fh)
+
+    assert evidence["alignment_class"] == "A4", (
+        "Fraud case should be alignment class A4"
+    )
+    assert len(evidence["fraud_flags"]) > 0, (
+        "Fraud case evaluation has no fraud flags"
+    )
+
+
+@pytest.mark.consistency
+def test_fraud_case_documents_actually_disagree(tmp_path):
+    """
+    The overstatement must be visible by reading the PDFs.
+
+    This is what makes a fraud case a fraud case rather than a label. The
+    1003 is rendered from the claimed state and the W-2 from the world
+    state, so the income the application asserts must appear on the
+    application and must NOT appear on the W-2.
+    """
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        TimelineCaseBundler,
+        income_inflation_fraud_timeline,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=57600,
+        loan_amount=450000,
+        property_value=500000,
+        dti_target=0.55,
+        scenario="rejected",
+    )
+    timeline = income_inflation_fraud_timeline(profile, months=18)
+
+    world = timeline.world_state_at(18)
+    claimed = timeline.claimed_state_at(18)
+    assert claimed.annual_gross_income > world.annual_gross_income, (
+        "income_inflation must raise the claimed income above the world "
+        "income; otherwise the case carries no detectable fraud"
+    )
+
+    case_dir = TimelineCaseBundler().generate_timeline_case(
+        timeline=timeline, output_dir=str(tmp_path)
+    )
+
+    w2_text = extract_text(
+        os.path.join(case_dir, "documents", "w2_2024.pdf")
+    )
+    loan_text = extract_text(
+        os.path.join(case_dir, "documents", "loan_app_1003.pdf")
+    )
+
+    claimed_monthly = f"{claimed.monthly_gross_income:,.0f}"
+    true_box1 = f"{world.w2_box1_wages:,.2f}"
+
+    assert claimed_monthly in loan_text, (
+        f"Claimed monthly income {claimed_monthly} is not on the 1003"
+    )
+    assert true_box1 in w2_text, (
+        f"True box 1 wages {true_box1} are not on the W-2"
+    )
+    assert claimed_monthly not in w2_text, (
+        "The inflated figure reached the W-2 — the fraud is not "
+        "detectable by cross-document comparison"
+    )
+
+
+@pytest.mark.consistency
+def test_clean_timeline_world_equals_claimed(tmp_path):
+    """
+    Without a fraud event, world and claimed states must be identical.
+
+    Guards the split introduced for fraud cases from leaking into ordinary
+    ones: a clean timeline must still be A0, with no discrepancies.
+    """
+    import json
+
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        TimelineCaseBundler,
+        career_growth_timeline,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=72000,
+        loan_amount=320000,
+        property_value=420000,
+    )
+    timeline = career_growth_timeline(profile, months=18)
+
+    world = timeline.world_state_at(18)
+    claimed = timeline.claimed_state_at(18)
+    assert world.annual_gross_income == claimed.annual_gross_income
+    assert world.total_monthly_debt == claimed.total_monthly_debt
+    assert world.employer_name == claimed.employer_name
+    assert timeline.alignment_class == "A0"
+
+    case_dir = TimelineCaseBundler().generate_timeline_case(
+        timeline=timeline, output_dir=str(tmp_path)
+    )
+    with open(
+        os.path.join(case_dir, "truth", "document_truth.json"),
+        encoding="utf-8",
+    ) as fh:
+        doc_truth = json.load(fh)
+
+    assert doc_truth["discrepancies"] == [], (
+        f"Clean timeline reported discrepancies: "
+        f"{doc_truth['discrepancies']}"
+    )

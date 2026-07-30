@@ -24,7 +24,7 @@ from realitydb_docs.packet import generate_case_pack
 # first and is still used by scripts, so it must keep working.
 SUBCOMMANDS = (
     "loan-app", "w2", "bank-statement", "paystub", "packet",
-    "scenarios", "alignments",
+    "timeline", "scenarios", "alignments",
 )
 
 
@@ -159,6 +159,54 @@ def _packet_command(argv):
         raise SystemExit(str(exc))
 
     print(f"\nPack written to {os.path.abspath(result)}")
+    return result
+
+
+def _timeline_command(argv):
+    """`cli.py timeline --count N ...`"""
+    parser = argparse.ArgumentParser(
+        prog="cli.py timeline",
+        description="Generate a pack of timeline cases: 18-month borrower "
+                    "journeys with life events, causal narrative and "
+                    "world-vs-document truth.",
+    )
+    parser.add_argument("--count", type=int, default=6)
+    parser.add_argument("--output", "--output-dir", dest="output",
+                        default="output")
+    parser.add_argument("--seed-start", type=int, default=1)
+    parser.add_argument("--pack-name", default="timeline_pack")
+    parser.add_argument(
+        "--months", type=int, default=18,
+        help="length of each timeline in months (default: 18)",
+    )
+    parser.add_argument(
+        "--no-zip", action="store_true",
+        help="leave the case folders in place instead of zipping them",
+    )
+    args = parser.parse_args(argv)
+
+    if args.count < 1:
+        raise SystemExit(f"--count must be at least 1, got {args.count}")
+    if args.months < 1:
+        raise SystemExit(f"--months must be at least 1, got {args.months}")
+
+    # Imported here rather than at module scope: the timeline engine pulls in
+    # packet.py, and the flat-flag form of this CLI has no need of either.
+    from realitydb_docs.timeline import generate_timeline_pack
+
+    try:
+        result = generate_timeline_pack(
+            count=args.count,
+            output_dir=args.output,
+            pack_name=args.pack_name,
+            seed_start=args.seed_start,
+            months=args.months,
+            zip_output=not args.no_zip,
+        )
+    except (FileExistsError, ValueError) as exc:
+        raise SystemExit(str(exc))
+
+    print(f"\nTimeline pack written to {os.path.abspath(result)}")
     return result
 
 
@@ -298,6 +346,8 @@ def main():
             return _paystub_command(argv)
         if command == "packet":
             return _packet_command(argv)
+        if command == "timeline":
+            return _timeline_command(argv)
         if command == "scenarios":
             return _scenarios_command(argv)
         if command == "alignments":
@@ -307,7 +357,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate a synthetic document set for PacketWise testing.",
         epilog="Subcommands: w2 | bank-statement | loan-app | paystub | "
-               "packet | scenarios | alignments "
+               "packet | timeline | scenarios | alignments "
                "(e.g. `cli.py packet --count 9 --output output/`)",
     )
     parser.add_argument("--output-dir", default="output",
