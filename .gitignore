@@ -3,3 +3,14 @@ output/
 *.pdf
 *.zip
 
+# Python bytecode and build artifacts. These were never ignored, so
+# realitydb_docs/__pycache__/*.pyc had been tracked since before the test
+# suite existed, and pytest's cache files joined them in Sprint 6.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+venv/
