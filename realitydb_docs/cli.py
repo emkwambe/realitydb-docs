@@ -16,11 +16,92 @@ from realitydb_docs.paystub import (
     TOTAL_PERIODS,
     generate_paystub_batch,
 )
+from realitydb_docs.packet import SCENARIOS, generate_case_pack
 
 # Subcommands understood by main(). Anything else falls through to the
 # original flat-flag interface (--w2-count/--bank-count), which shipped
 # first and is still used by scripts, so it must keep working.
-SUBCOMMANDS = ("loan-app", "w2", "bank-statement", "paystub")
+SUBCOMMANDS = ("loan-app", "w2", "bank-statement", "paystub", "packet")
+
+
+def _parse_distribution(raw, count):
+    """Parse `--distribution approved:3,flagged:3,rejected:3`."""
+    if raw is None:
+        return None
+    distribution = {}
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise SystemExit(
+                f"--distribution entries must be scenario:count, "
+                f"got {part!r}"
+            )
+        scenario, _, number = part.partition(":")
+        scenario = scenario.strip()
+        if scenario not in SCENARIOS:
+            raise SystemExit(
+                f"--distribution: unknown scenario {scenario!r}; "
+                f"choose from {sorted(SCENARIOS)}"
+            )
+        try:
+            distribution[scenario] = int(number)
+        except ValueError:
+            raise SystemExit(
+                f"--distribution: {number!r} is not an integer"
+            )
+    if not distribution:
+        raise SystemExit("--distribution named no scenarios")
+    total = sum(distribution.values())
+    if total != count:
+        raise SystemExit(
+            f"--distribution sums to {total} but --count is {count}"
+        )
+    return distribution
+
+
+def _packet_command(argv):
+    """`cli.py packet --count N ...`"""
+    parser = argparse.ArgumentParser(
+        prog="cli.py packet",
+        description="Generate a complete case pack (documents + truth + "
+                    "evaluation layers) as a ZIP.",
+    )
+    parser.add_argument("--count", type=int, default=9)
+    parser.add_argument("--output", "--output-dir", dest="output",
+                        default="output")
+    parser.add_argument("--seed-start", type=int, default=1)
+    parser.add_argument("--pack-name", default="auto_loan_starter")
+    parser.add_argument(
+        "--distribution", default=None,
+        help="scenario:count pairs, e.g. "
+             "approved:3,flagged:3,rejected:3 (default: even split)",
+    )
+    parser.add_argument(
+        "--no-zip", action="store_true",
+        help="leave the case folders in place instead of zipping them",
+    )
+    args = parser.parse_args(argv)
+
+    if args.count < 1:
+        raise SystemExit(f"--count must be at least 1, got {args.count}")
+
+    distribution = _parse_distribution(args.distribution, args.count)
+    try:
+        result = generate_case_pack(
+            count=args.count,
+            output_dir=args.output,
+            pack_name=args.pack_name,
+            seed_start=args.seed_start,
+            distribution=distribution,
+            zip_output=not args.no_zip,
+        )
+    except (FileExistsError, ValueError) as exc:
+        raise SystemExit(str(exc))
+
+    print(f"\nPack written to {os.path.abspath(result)}")
+    return result
 
 
 def _parse_periods(raw):
@@ -157,12 +238,14 @@ def main():
             return _w2_command(argv)
         if command == "paystub":
             return _paystub_command(argv)
+        if command == "packet":
+            return _packet_command(argv)
         return _bank_statement_command(argv)
 
     parser = argparse.ArgumentParser(
         description="Generate a synthetic document set for PacketWise testing.",
-        epilog="Subcommands: w2 | bank-statement | loan-app | paystub "
-               "(e.g. `cli.py loan-app --count 3 --output output/`)",
+        epilog="Subcommands: w2 | bank-statement | loan-app | paystub | "
+               "packet (e.g. `cli.py packet --count 9 --output output/`)",
     )
     parser.add_argument("--output-dir", default="output",
                         help="directory for generated PDFs (default: output)")

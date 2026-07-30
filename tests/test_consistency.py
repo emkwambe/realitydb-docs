@@ -486,6 +486,223 @@ def test_paystub_watermark(seed, generator, tmp_path):
     )
 
 
+# ── Case bundler tests ────────────────────────────────────
+
+CASE_FILES = [
+    "documents/w2_2024.pdf",
+    "documents/bank_oct_2024.pdf",
+    "documents/bank_nov_2024.pdf",
+    "documents/loan_app_1003.pdf",
+    "documents/paystub_period22.pdf",
+    "documents/paystub_period21.pdf",
+    "truth/borrower.json",
+    "truth/employment.json",
+    "truth/income.json",
+    "truth/liabilities.json",
+    "truth/case_manifest.json",
+    "evaluation/expected_extractions.json",
+    "evaluation/alignment_matrix.json",
+    "evaluation/expected_decision.json",
+    "README.md",
+]
+
+
+@pytest.mark.consistency
+def test_packet_generates_all_files(tmp_path):
+    """A case folder must contain all 15 files, none empty."""
+    from realitydb_docs.packet import CaseBundler
+
+    case_dir = CaseBundler().generate_case(
+        seed=42, scenario="approved", output_dir=str(tmp_path)
+    )
+    for item in CASE_FILES:
+        path = os.path.join(case_dir, item)
+        assert os.path.exists(path), f"Missing: {item}"
+        assert os.path.getsize(path) > 0, f"Empty: {item}"
+
+
+@pytest.mark.consistency
+def test_manifest_name_matches_documents(tmp_path):
+    """The name in the manifest must be the name on the documents."""
+    import json
+
+    from realitydb_docs.packet import CaseBundler
+
+    case_dir = CaseBundler().generate_case(
+        seed=42, scenario="approved", output_dir=str(tmp_path)
+    )
+    with open(
+        os.path.join(case_dir, "truth", "case_manifest.json"),
+        encoding="utf-8",
+    ) as fh:
+        manifest = json.load(fh)
+
+    expected_name = manifest["borrower"]["full_name"]
+
+    w2_text = extract_text(
+        os.path.join(case_dir, "documents", "w2_2024.pdf")
+    )
+    assert expected_name.split()[0] in w2_text, (
+        f"Name {expected_name} not found in W-2"
+    )
+
+    loan_text = extract_text(
+        os.path.join(case_dir, "documents", "loan_app_1003.pdf")
+    )
+    assert expected_name in loan_text, (
+        f"Name {expected_name} not found in loan app"
+    )
+
+
+@pytest.mark.consistency
+def test_manifest_decision_correct(tmp_path):
+    """expected_decision.json must record the scenario asked for."""
+    import json
+
+    from realitydb_docs.packet import CaseBundler
+
+    bundler = CaseBundler()
+    for i, scenario in enumerate(["approved", "flagged", "rejected"]):
+        case_dir = bundler.generate_case(
+            seed=200 + i, scenario=scenario, output_dir=str(tmp_path)
+        )
+        with open(
+            os.path.join(
+                case_dir, "evaluation", "expected_decision.json"
+            ),
+            encoding="utf-8",
+        ) as fh:
+            decision = json.load(fh)
+
+        assert decision["expected_decision"] == scenario, (
+            f"Scenario {scenario}: decision mismatch in "
+            f"expected_decision.json"
+        )
+
+
+@pytest.mark.consistency
+@pytest.mark.parametrize("seed", SEEDS[:8])
+def test_expected_extractions_appear_on_documents(seed, tmp_path):
+    """
+    Every expected extraction must be present on its document.
+
+    This is the gate on the layer a customer actually buys. A truth file
+    that disagrees with the PDF beside it is worse than a missing one: a
+    model scored against it is marked wrong for being right.
+
+    Three formatting differences make this non-trivial, and stating the
+    underlying value instead of the printed one fails on all three:
+    the 1003 prints money to whole dollars, a bank payroll deposit jitters
+    +/-3% around monthly gross, and the pay stub upper-cases the employer.
+    """
+    import json
+
+    from realitydb_docs.packet import CaseBundler
+
+    scenario = ["approved", "flagged", "rejected"][seed % 3]
+    case_dir = CaseBundler().generate_case(
+        seed=seed, scenario=scenario, output_dir=str(tmp_path)
+    )
+    with open(
+        os.path.join(
+            case_dir, "evaluation", "expected_extractions.json"
+        ),
+        encoding="utf-8",
+    ) as fh:
+        expected = json.load(fh)
+
+    checked = 0
+    for doc_key, fields in expected.items():
+        if doc_key.startswith("_"):
+            continue
+        body = extract_text(
+            os.path.join(case_dir, "documents", f"{doc_key}.pdf")
+        )
+        whole_dollars = doc_key == "loan_app_1003"
+        for name, value in fields.items():
+            if value is None or isinstance(value, bool):
+                continue
+            if name.endswith(("_reference", "_pct", "_normalized")):
+                continue
+            if isinstance(value, (int, float)):
+                if name in (
+                    "pay_period_number", "pay_periods_per_year", "tax_year"
+                ):
+                    needle = str(int(value))
+                elif name in ("ltv_ratio", "dti_ratio"):
+                    continue  # asserted via the *_as_printed strings
+                elif whole_dollars:
+                    needle = f"{value:,.0f}"
+                else:
+                    needle = f"{value:,.2f}"
+            elif isinstance(value, str) and (
+                name.endswith("name") or name.endswith("as_printed")
+            ):
+                needle = value
+            else:
+                continue
+            checked += 1
+            assert needle in body, (
+                f"Seed {seed}: {doc_key}.{name} = {needle!r} "
+                f"is not present on the rendered document"
+            )
+
+    assert checked > 50, (
+        f"Seed {seed}: only {checked} values checked — the assertion "
+        f"loop is not covering the documents"
+    )
+
+
+@pytest.mark.consistency
+@pytest.mark.parametrize("seed", SEEDS[:8])
+def test_paystub_ytd_ties_to_w2_in_truth_layer(seed, tmp_path):
+    """
+    The truth layer's own numbers must reconcile.
+
+    Annualized YTD taxable wages from the pay stub must equal W-2 box 1,
+    and FICA must be computed on gross rather than on box 1 — boxes 3 and 5
+    exceed box 1 by the deferral on a real W-2.
+    """
+    import json
+
+    from realitydb_docs.packet import CaseBundler
+    from realitydb_docs.paystub import TOTAL_PERIODS
+
+    scenario = ["approved", "flagged", "rejected"][seed % 3]
+    case_dir = CaseBundler().generate_case(
+        seed=seed, scenario=scenario, output_dir=str(tmp_path)
+    )
+
+    def load(*parts):
+        with open(os.path.join(case_dir, *parts), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    income = load("truth", "income.json")
+    expected = load("evaluation", "expected_extractions.json")
+    w2 = expected["w2_2024"]
+    stub = expected["paystub_period22"]
+
+    annualized = (
+        stub["ytd_taxable"] / stub["pay_period_number"] * TOTAL_PERIODS
+    )
+    assert abs(annualized - w2["wages_box_1"]) < 0.01, (
+        f"Seed {seed}: annualized YTD taxable {annualized:,.2f} != "
+        f"W-2 box 1 {w2['wages_box_1']:,.2f}"
+    )
+
+    rate = income["retirement_contrib_rate"]
+    assert abs(
+        w2["medicare_wages_box_5"] - income["annual_gross_income"]
+    ) < 0.01, (
+        f"Seed {seed}: box 5 must be gross, not box 1"
+    )
+    if rate > 0:
+        assert w2["ss_wages_box_3"] > w2["wages_box_1"], (
+            f"Seed {seed}: with a {rate:.0%} deferral box 3 must exceed "
+            f"box 1"
+        )
+
+
 @pytest.mark.rendering
 @pytest.mark.parametrize("seed", SEEDS)
 def test_paystub_no_text_outside_page(seed, generator, tmp_path):
