@@ -102,6 +102,9 @@ class W2FormRenderer:
         filepath = os.path.join(self.output_dir, filename)
         c = canvas.Canvas(filepath, pagesize=letter)
 
+        # ─── Watermark (drawn first, so it sits under the form) ───
+        self._watermark(c)
+
         # ─── Background / Form Lines ───
         self._draw_form_outline(c)
 
@@ -206,6 +209,26 @@ class W2FormRenderer:
         return filepath
 
     # -- drawing helpers ------------------------------------------------
+
+    def _watermark(self, c):
+        """Diagonal SYNTHETIC marking on every page.
+
+        The bank statement and the 1003 have carried this since they were
+        written; the W-2 did not, which left the one document in a packet a
+        reader was most likely to mistake for genuine without any marking at
+        all. Matches the other two renderers exactly.
+        """
+        c.saveState()
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        try:
+            c.setFillAlpha(0.20)
+        except AttributeError:      # very old reportlab
+            c.setFillColorRGB(0.85, 0.85, 0.85)
+        c.translate(self.width / 2, self.height / 2)
+        c.rotate(45)
+        c.setFont("Helvetica-Bold", 36)
+        c.drawCentredString(0, 0, "SYNTHETIC - NOT VALID")
+        c.restoreState()
 
     def _draw_form_outline(self, c):
         """Draw the outer border of the W-2 form, inset from the margin."""
@@ -347,7 +370,15 @@ class W2Renderer:
     def render(self, output_path: str, add_noise: bool = False) -> str:
         """Render W-2 PDF. Returns output_path."""
         p = self.profile
-        ss_wages = min(self.annual_wages, SS_WAGE_BASE)
+        # Recover the gross the wages were deferred out of, so FICA is
+        # computed on gross the way a payroll system does. For year_offset=0
+        # this returns profile.annual_gross_income exactly.
+        rate = p.retirement_contrib_rate
+        gross = (
+            self.annual_wages / (1 - rate) if rate < 1
+            else self.annual_wages
+        )
+        ss_wages = min(gross, SS_WAGE_BASE)
         _render_w2_pdf(
             output_path=output_path,
             employee_name=p.full_name,
@@ -362,8 +393,8 @@ class W2Renderer:
             ),
             ss_wages=ss_wages,
             ss_withheld=ss_wages * SS_RATE,
-            medicare_wages=self.annual_wages,
-            medicare_withheld=self.annual_wages * MEDICARE_RATE,
+            medicare_wages=gross,
+            medicare_withheld=gross * MEDICARE_RATE,
             state_wages=self.annual_wages,
             state_withheld=(
                 self.annual_wages * p.state_withholding_rate

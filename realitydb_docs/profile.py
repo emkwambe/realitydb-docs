@@ -312,15 +312,30 @@ class BorrowerProfile:
         return self.w2_box1_wages * self.federal_withholding_rate
 
     @property
+    def w2_box17_state_withheld(self) -> float:
+        return self.w2_box1_wages * self.state_withholding_rate
+
+    # FICA is computed on GROSS, not on Box 1. A pre-tax 401k deferral is
+    # exempt from income tax but not from Social Security or Medicare, so on a
+    # real W-2 boxes 3 and 5 exceed box 1 by the deferral. Computing FICA on
+    # box 1 understated it and — since a pay stub necessarily withholds FICA
+    # on the gross it pays — made the stub and the W-2 irreconcilable.
+
+    @property
+    def w2_box3_ss_wages(self) -> float:
+        return min(self.annual_gross_income, SS_WAGE_BASE)
+
+    @property
     def w2_box4_ss_withheld(self) -> float:
-        ss_wages = min(
-            self.w2_box1_wages, SS_WAGE_BASE
-        )  # 2024 SS wage base
-        return ss_wages * SS_RATE
+        return self.w2_box3_ss_wages * SS_RATE
+
+    @property
+    def w2_box5_medicare_wages(self) -> float:
+        return self.annual_gross_income
 
     @property
     def w2_box6_medicare_withheld(self) -> float:
-        return self.w2_box1_wages * MEDICARE_RATE
+        return self.w2_box5_medicare_wages * MEDICARE_RATE
 
     @property
     def total_monthly_debt(self) -> float:

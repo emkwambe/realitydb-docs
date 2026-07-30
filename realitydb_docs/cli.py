@@ -1,4 +1,5 @@
-"""RealityDB Batch Generator — W-2s + Bank Statements + Loan Applications.
+"""RealityDB Batch Generator — W-2s + Bank Statements + Loan Applications
++ Pay Stubs.
 Run this to generate a full synthetic dataset for PacketWise testing."""
 import argparse
 import os
@@ -11,11 +12,70 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from realitydb_docs.w2 import generate_synthetic_w2_batch
 from realitydb_docs.bank_statement import generate_synthetic_bank_statement_batch
 from realitydb_docs.loan_app import generate_loan_application_batch
+from realitydb_docs.paystub import (
+    TOTAL_PERIODS,
+    generate_paystub_batch,
+)
 
 # Subcommands understood by main(). Anything else falls through to the
 # original flat-flag interface (--w2-count/--bank-count), which shipped
 # first and is still used by scripts, so it must keep working.
-SUBCOMMANDS = ("loan-app", "w2", "bank-statement")
+SUBCOMMANDS = ("loan-app", "w2", "bank-statement", "paystub")
+
+
+def _parse_periods(raw):
+    """Parse `--periods 21,22` into a validated tuple."""
+    if raw is None:
+        return (21, 22)
+    try:
+        periods = tuple(
+            int(part) for part in str(raw).split(",") if part.strip()
+        )
+    except ValueError:
+        raise SystemExit(
+            f"--periods must be comma-separated integers, got {raw!r}"
+        )
+    if not periods:
+        raise SystemExit("--periods must name at least one pay period")
+    out_of_range = [p for p in periods if not 1 <= p <= TOTAL_PERIODS]
+    if out_of_range:
+        raise SystemExit(
+            f"--periods out of range 1-{TOTAL_PERIODS}: {out_of_range}"
+        )
+    return periods
+
+
+def _paystub_command(argv):
+    """`cli.py paystub --count N ...`"""
+    parser = argparse.ArgumentParser(
+        prog="cli.py paystub",
+        description="Generate bi-weekly pay stub PDFs.",
+    )
+    parser.add_argument("--count", type=int, default=1)
+    parser.add_argument("--output", "--output-dir", dest="output",
+                        default="output")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--annual-income", type=float, default=None,
+                        help="applies to every document")
+    parser.add_argument(
+        "--periods", default=None,
+        help=f"comma-separated pay periods 1-{TOTAL_PERIODS} "
+             f"(default: 21,22 — the two most recent)",
+    )
+    args = parser.parse_args(argv)
+
+    periods = _parse_periods(args.periods)
+    results = generate_paystub_batch(
+        count=args.count,
+        output_dir=args.output,
+        seed_start=args.seed,
+        annual_incomes=[args.annual_income] if args.annual_income else None,
+        pay_periods=periods,
+    )
+    print(
+        f"\n{len(results)} pay stub(s) in {os.path.abspath(args.output)}"
+    )
+    return [path for path, _ in results]
 
 
 def _loan_app_command(argv):
@@ -95,11 +155,13 @@ def main():
             return _loan_app_command(argv)
         if command == "w2":
             return _w2_command(argv)
+        if command == "paystub":
+            return _paystub_command(argv)
         return _bank_statement_command(argv)
 
     parser = argparse.ArgumentParser(
         description="Generate a synthetic document set for PacketWise testing.",
-        epilog="Subcommands: w2 | bank-statement | loan-app "
+        epilog="Subcommands: w2 | bank-statement | loan-app | paystub "
                "(e.g. `cli.py loan-app --count 3 --output output/`)",
     )
     parser.add_argument("--output-dir", default="output",

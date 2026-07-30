@@ -1,0 +1,9 @@
+# Test dependencies for the consistency suite (tests/).
+#
+# PyMuPDF is what makes the suite meaningful: every consistency assertion is
+# made against text extracted from the rendered PDF, not against the profile
+# object, so a renderer that computes the right value and fails to draw it
+# still fails the test.
+-r requirements.txt
+pytest>=8.0
+PyMuPDF>=1.24
