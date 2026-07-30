@@ -1,0 +1,88 @@
+# RealityDB Financial Constants
+# ==============================
+# IRS and regulatory constants.
+# Update this file annually — no code changes needed.
+# All generator code reads from here via config.py.
+#
+# Sources:
+#   IRS Publication 15 (Circular E) — withholding
+#   IRS Notice 2023-75 — SS wage base 2024
+#   IRS Rev. Proc. 2023-34 — 401k limits 2024
+#   SSA fact sheet — SS rate
+#   IRS Publication 15 (Circular E) — Medicare rate
+
+tax_year: 2024
+
+fica:
+  # Social Security
+  ss_rate: 0.062             # Employee share (real IRS rate)
+  ss_wage_base: 160200       # 2024 (IRS Notice 2023-75)
+  # Medicare
+  medicare_rate: 0.0145      # Employee share (real IRS rate)
+  # Declared for completeness. NOT yet applied by any renderer: no generated
+  # borrower earns above the threshold, so wiring it would be untestable.
+  additional_medicare_rate: 0.009
+  additional_medicare_threshold: 200000  # Single filer
+
+withholding:
+  # Synthetic withholding rate range.
+  # Real rates depend on W-4 elections; these produce realistic Box 2 amounts.
+  federal_rate_min: 0.12
+  federal_rate_max: 0.22
+  state_rate_min: 0.03
+  state_rate_max: 0.07
+
+retirement:
+  # 401k synthetic contribution rates.
+  # IRS limit 2024: $23,000 (IRS Rev. Proc. 2023-34)
+  contribution_options:
+    - 0.0
+    - 0.03
+    - 0.05
+    - 0.06
+    - 0.08
+  # Never generate above 8%. A 10% deferral puts W-2 box 1 exactly on the
+  # usual 10% income-variance tolerance, where rounding on the printed form
+  # decides whether the check fires (Sprint 6).
+  cap: 0.08
+  # Declared for reference. Not enforced: no generated income makes an 8%
+  # deferral reach the annual limit.
+  annual_limit: 23000
+
+pay_periods:
+  bi_weekly: 26
+  # Declared for future frequencies. Only bi_weekly is implemented by
+  # PayStubRenderer today.
+  semi_monthly: 24
+  monthly: 12
+  weekly: 52
+  default: bi_weekly
+
+underwriting:
+  # CFPB Ability-to-Repay / QM Rule
+  # 12 CFR Part 1026 (real regulatory thresholds)
+  dti_threshold_qm: 0.43     # QM safe harbor
+  dti_threshold_max: 0.50    # Hard ceiling
+  # Fannie Mae Selling Guide B2-1.3
+  ltv_threshold: 0.80        # Conventional max
+  ltv_fha_max: 0.965         # FHA max
+  # Minimum acceptable credit score (synthetic)
+  min_credit_score: 620
+  # Income verification tolerance
+  income_variance_tolerance: 0.10
+  # Front-end DTI (housing ratio). The band is stated as explicit endpoints
+  # rather than target +/- spread: 0.28 - 0.04 evaluates to
+  # 0.24000000000000002 in binary floating point, which would shift every
+  # generated housing payment in its last bits for no reason.
+  housing_ratio_target: 0.28   # documentation; the band below is what is used
+  housing_ratio_min: 0.24
+  housing_ratio_max: 0.32
+
+ssn:
+  # Reserved range for synthetic SSNs.
+  # 900-999 area numbers have never been issued (SSA policy).
+  prefix: "900"
+  middle_min: 10
+  middle_max: 99
+  suffix_min: 1000
+  suffix_max: 9999

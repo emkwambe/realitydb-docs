@@ -1,0 +1,136 @@
+# RealityDB Case Scenarios
+# =========================
+# Scenario definitions for case generation.
+# Add new scenarios here — no code changes needed.
+#
+# NOTE on enabling the commented scenarios below: generate_case_pack's default
+# even split covers approved/flagged/rejected only. A newly enabled scenario is
+# usable immediately via --distribution and via generate_case(scenario=...),
+# but will not appear in a default-distribution pack until the default is
+# widened.
+
+scenarios:
+  approved:
+    annual_income: 102000
+    loan_amount: 320000
+    property_value: 420000
+    dti_target: 0.36
+    description: >
+      Prime borrower. DTI well within QM threshold.
+      Strong income relative to loan amount.
+      LTV at 76.2% within conventional limits.
+
+  flagged:
+    annual_income: 74400
+    loan_amount: 380000
+    property_value: 460000
+    dti_target: 0.45
+    description: >
+      Marginal borrower. DTI between QM and max
+      thresholds (43-50%). Requires manual review.
+      LTV at 82.6% above 80% conventional limit.
+
+  rejected:
+    annual_income: 57600
+    loan_amount: 450000
+    property_value: 500000
+    dti_target: 0.55
+    description: >
+      Rejected borrower. DTI exceeds maximum
+      threshold of 50%. Loan amount high relative
+      to income. LTV at 90%.
+
+  # ── Future scenarios ──────────────────────────
+  # Uncomment to enable. Available immediately in
+  # `cli scenarios`, `generate_case(scenario=...)` and
+  # `--distribution`, with no code change.
+
+  # thin_file:
+  #   annual_income: 48000
+  #   loan_amount: 180000
+  #   property_value: 220000
+  #   dti_target: 0.38
+  #   description: >
+  #     Limited credit history. Lower income.
+  #     Conservative loan amount.
+
+  # high_income:
+  #   annual_income: 220000
+  #   loan_amount: 750000
+  #   property_value: 950000
+  #   dti_target: 0.32
+  #   description: >
+  #     High income jumbo loan. Low DTI.
+  #     LTV at 78.9%.
+
+  # gig_worker:
+  #   annual_income: 67000
+  #   loan_amount: 240000
+  #   property_value: 300000
+  #   dti_target: 0.40
+  #   description: >
+  #     1099 contractor. Variable income.
+  #     Multiple payer scenario.
+
+alignment_classes:
+  A0:
+    code: A0
+    label: Perfectly Aligned
+    description: >
+      All documents describe the same borrower
+      with fully consistent identity, employment,
+      income, assets, and liabilities.
+      Used for OCR and extraction baseline testing.
+    fraud_probability: 0.0
+    available: true
+
+  A1:
+    code: A1
+    label: Benign Variation
+    description: >
+      Natural variation that appears in real
+      document sets. Employer name abbreviation,
+      address formatting differences, payroll
+      description variation. No fraud intent.
+    fraud_probability: 0.0
+    available: false  # Sprint 9
+
+  A2:
+    code: A2
+    label: Explainable Discrepancy
+    description: >
+      Legitimate discrepancies with reasonable
+      explanations. Recent address change, job
+      change during year, bonus income in W-2.
+    fraud_probability: 0.0
+    available: false  # Sprint 9
+
+  A3:
+    code: A3
+    label: Material Inconsistency
+    description: >
+      Significant inconsistencies that should
+      trigger manual review. Unsupported income,
+      undisclosed debt, employer conflict.
+    fraud_probability: 0.0
+    available: false  # Sprint 10
+
+  A4:
+    code: A4
+    label: Probable Manipulation
+    description: >
+      Evidence of document manipulation.
+      Altered wage amounts, modified balances,
+      impossible tax calculations.
+    fraud_probability: 0.8
+    available: false  # Sprint 10
+
+  A5:
+    code: A5
+    label: Coordinated Synthetic Fraud
+    description: >
+      Multiple documents support a false story
+      with subtle shared defects. Advanced
+      fraud detection testing.
+    fraud_probability: 1.0
+    available: false  # Sprint 11

@@ -33,6 +33,7 @@ import calendar
 import random
 import os
 
+from realitydb_docs.config import cfg
 from realitydb_docs.profile import (
     BorrowerProfile,
     FinancialCaseGenerator,
@@ -373,7 +374,7 @@ class BankStatementStyleRenderer:
         c.translate(self.width / 2, self.height / 2)
         c.rotate(45)
         c.setFont("Helvetica-Bold", 36)
-        c.drawCentredString(0, 0, "SYNTHETIC - NOT VALID")
+        c.drawCentredString(0, 0, cfg.watermark_text)
         c.restoreState()
 
     def _fit(self, c, text, width, font, size):
@@ -670,7 +671,8 @@ class BankStatementRenderer:
 
         # ── Payroll deposit (1st or 15th) ────────────────
         payroll_day = self.rng.choice([1, 15])
-        payroll_var = self.rng.uniform(0.97, 1.03)
+        pv = cfg.payroll_variation
+        payroll_var = self.rng.uniform(1 - pv, 1 + pv)
         payroll_amount = (
             self.profile.monthly_gross_income * payroll_var
         )
@@ -733,7 +735,8 @@ class BankStatementRenderer:
             })
 
         # ── Variable spending ─────────────────────────────
-        num_variable = self.rng.randint(8, 16)
+        var_lo, var_hi = cfg.variable_transactions_range
+        num_variable = self.rng.randint(var_lo, var_hi)
         variable_types = [
             ("GROCERY STORE", 30, 180),
             ("GAS STATION", 30, 75),
@@ -802,7 +805,7 @@ def generate_synthetic_bank_statement(
 
     gen = FinancialCaseGenerator()
     income = annual_income or (
-        random.Random(seed * 71).uniform(35000, 180000)
+        random.Random(seed * 71).uniform(cfg.income_min, cfg.income_max)
     )
     profile = gen.generate(
         seed=seed,

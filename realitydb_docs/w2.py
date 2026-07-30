@@ -24,6 +24,7 @@ from typing import Optional
 import random
 import os
 
+from realitydb_docs.config import cfg
 from realitydb_docs.profile import (
     BorrowerProfile,
     FinancialCaseGenerator,
@@ -227,7 +228,7 @@ class W2FormRenderer:
         c.translate(self.width / 2, self.height / 2)
         c.rotate(45)
         c.setFont("Helvetica-Bold", 36)
-        c.drawCentredString(0, 0, "SYNTHETIC - NOT VALID")
+        c.drawCentredString(0, 0, cfg.watermark_text)
         c.restoreState()
 
     def _draw_form_outline(self, c):
@@ -437,7 +438,7 @@ def generate_synthetic_w2_batch(
             seed=seed + i,
             annual_income=target_annual_income or (
                 random.Random(seed + i * 97).uniform(
-                    35000, 180000
+                    cfg.income_min, cfg.income_max
                 )
             ),
             loan_amount=320000,     # placeholder — not printed on a W-2

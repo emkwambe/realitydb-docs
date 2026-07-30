@@ -56,6 +56,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 
+from realitydb_docs.config import cfg
 from realitydb_docs.profile import (
     BorrowerProfile,
     FinancialCaseGenerator,
@@ -68,21 +69,27 @@ from realitydb_docs.profile import (
 # ── Layout constants ─────────────────────────────────────
 
 PAGE_W, PAGE_H = letter   # 612 × 792 points
-MARGIN = 0.65 * inch
+MARGIN = cfg.documents["margins"]["page_inch"] * inch
 
-# Colors
-COLOR_HEADER_BG   = colors.HexColor("#1a3a6b")
-COLOR_HEADER_TEXT = colors.white
-COLOR_SECTION_BG  = colors.HexColor("#e8edf4")
-COLOR_BORDER      = colors.HexColor("#cbd5e1")
-COLOR_LABEL       = colors.HexColor("#6b7280")
-COLOR_VALUE       = colors.HexColor("#111827")
-COLOR_TOTAL_BG    = colors.HexColor("#1a3a6b")
-COLOR_TOTAL_TEXT  = colors.white
-COLOR_NET_BG      = colors.HexColor("#166534")
-COLOR_NET_TEXT    = colors.white
-COLOR_WATERMARK   = colors.HexColor("#d1d5db")
-COLOR_ROW_SHADE   = colors.HexColor("#f1f5f9")
+# Colours, from config/documents.yaml. This renderer is the one document whose
+# palette is RealityDB's own rather than an imitation of a real form, so it is
+# the one whose colours are worth making configurable.
+COLOR_HEADER_BG   = colors.HexColor(cfg.color("header_bg"))
+COLOR_HEADER_TEXT = colors.HexColor(cfg.color("header_text"))
+COLOR_SECTION_BG  = colors.HexColor(cfg.color("section_bg"))
+COLOR_BORDER      = colors.HexColor(cfg.color("border"))
+COLOR_LABEL       = colors.HexColor(cfg.color("label"))
+COLOR_VALUE       = colors.HexColor(cfg.color("value"))
+COLOR_TOTAL_BG    = colors.HexColor(cfg.color("header_bg"))
+COLOR_TOTAL_TEXT  = colors.HexColor(cfg.color("header_text"))
+COLOR_NET_BG      = colors.HexColor(cfg.color("success_bg"))
+COLOR_NET_TEXT    = colors.HexColor(cfg.color("success_text"))
+COLOR_WATERMARK   = colors.HexColor(cfg.color("watermark"))
+COLOR_ROW_SHADE   = colors.HexColor(cfg.color("row_alt"))
+
+FONT_PRIMARY = cfg.font("primary")
+FONT_BOLD    = cfg.font("bold")
+FONT_ITALIC  = cfg.font("italic")
 
 # Column geometry for the earnings/deductions table.
 #
@@ -106,21 +113,26 @@ INFO_LABEL_DY    = 15      # first label below box top
 INFO_VALUE_DY    = 11      # value below its own label
 INFO_BOX_PAD     = 8       # padding under the last value
 
-TOTAL_PERIODS = 26   # bi-weekly pay periods per year
+# Bi-weekly pay periods per year, from config/financial.yaml. Read once at
+# import, so a cfg.reload() does not move it.
+TOTAL_PERIODS = cfg.pay_periods_biweekly
 
 
 def _draw_watermark(c: canvas.Canvas) -> None:
     """Diagonal SYNTHETIC watermark on every page."""
     c.saveState()
-    c.setFont("Helvetica-Bold", 36)
+    c.setFont(FONT_BOLD, cfg.watermark_font_size)
     c.setFillColor(COLOR_WATERMARK)
     try:
-        c.setFillAlpha(0.35)
+        # The configured opacity is doubled here: this renderer paints its
+        # watermark in a light grey rather than the mid grey the other three
+        # use, so the same alpha reads as noticeably fainter.
+        c.setFillAlpha(min(cfg.watermark_opacity * 2, 1.0))
     except AttributeError:      # very old reportlab
         pass
     c.translate(PAGE_W / 2, PAGE_H / 2)
-    c.rotate(45)
-    c.drawCentredString(0, 0, "SYNTHETIC — NOT VALID")
+    c.rotate(cfg.documents["watermark"]["rotation"])
+    c.drawCentredString(0, 0, cfg.watermark_text)
     c.restoreState()
 
 
@@ -148,10 +160,10 @@ def _draw_info_box(
     for i, (label, value) in enumerate(pairs):
         ly = y_top - INFO_LABEL_DY - i * INFO_ROW_PITCH
         c.setFillColor(COLOR_LABEL)
-        c.setFont("Helvetica", 7)
+        c.setFont(FONT_PRIMARY, 7)
         c.drawString(x + 8, ly, label)
         c.setFillColor(COLOR_VALUE)
-        c.setFont("Helvetica-Bold", 8.5)
+        c.setFont(FONT_BOLD, 8.5)
         c.drawString(x + 8, ly - INFO_VALUE_DY, str(value))
 
 
@@ -178,13 +190,13 @@ def _draw_header(
         fill=1, stroke=0
     )
     c.setFillColor(COLOR_HEADER_TEXT)
-    c.setFont("Helvetica-Bold", 13)
+    c.setFont(FONT_BOLD, 13)
     c.drawString(
         MARGIN + 8,
         y - banner_h * 0.38,
         profile.employer_name.upper()
     )
-    c.setFont("Helvetica", 8)
+    c.setFont(FONT_PRIMARY, 8)
     c.drawString(
         MARGIN + 8,
         y - banner_h * 0.72,
@@ -192,13 +204,13 @@ def _draw_header(
     )
 
     # PAY STUB label top right
-    c.setFont("Helvetica-Bold", 10)
+    c.setFont(FONT_BOLD, 10)
     c.drawRightString(
         CONTENT_RIGHT - 8,
         y - banner_h * 0.38,
         "PAY STUB"
     )
-    c.setFont("Helvetica", 8)
+    c.setFont(FONT_PRIMARY, 8)
     c.drawRightString(
         CONTENT_RIGHT - 8,
         y - banner_h * 0.72,
@@ -249,7 +261,7 @@ def _draw_table_header(
         fill=1, stroke=0
     )
     c.setFillColor(COLOR_HEADER_TEXT)
-    c.setFont("Helvetica-Bold", 7.5)
+    c.setFont(FONT_BOLD, 7.5)
     c.drawString(COL_DESC_X + 4, y - 12, "DESCRIPTION")
     c.drawRightString(COL_CURR_RIGHT, y - 12, "CURRENT ($)")
     c.drawRightString(COL_YTD_RIGHT - 4, y - 12, "YTD ($)")
@@ -275,7 +287,7 @@ def _draw_row(
             CONTENT_W, row_h,
             fill=1, stroke=0
         )
-    font = "Helvetica-Bold" if bold else "Helvetica"
+    font = FONT_BOLD if bold else FONT_PRIMARY
     c.setFont(font, 8)
     c.setFillColor(COLOR_VALUE)
     c.drawString(
@@ -301,7 +313,7 @@ def _draw_section_label(
         CONTENT_W, sec_h,
         fill=1, stroke=0
     )
-    c.setFont("Helvetica-Bold", 7.5)
+    c.setFont(FONT_BOLD, 7.5)
     c.setFillColor(COLOR_HEADER_BG)
     c.drawString(MARGIN + 4, y - 10, title)
     return y - sec_h
@@ -326,7 +338,7 @@ def _draw_total_row(
         CONTENT_W, row_h,
         fill=1, stroke=0
     )
-    c.setFont("Helvetica-Bold", 9)
+    c.setFont(FONT_BOLD, 9)
     c.setFillColor(tc)
     c.drawString(MARGIN + 4, y - 13, label)
     c.drawRightString(COL_CURR_RIGHT, y - 13, f"{current:,.2f}")
@@ -343,15 +355,12 @@ def _draw_footer(
     c.setStrokeColor(COLOR_BORDER)
     c.setLineWidth(0.5)
     c.line(MARGIN, y + 10, CONTENT_RIGHT, y + 10)
-    c.setFont("Helvetica", 6.5)
+    c.setFont(FONT_PRIMARY, cfg.font("footer_size"))
     c.setFillColor(COLOR_LABEL)
-    c.drawCentredString(
-        PAGE_W / 2, y + 2,
-        "© 2026 Mpingo Systems LLC | "
-        "RealityDB Synthetic Documents | "
-        "For testing and development only | "
-        "SYNTHETIC — NOT VALID"
-    )
+    text = cfg.footer_text
+    if cfg.documents["footer"].get("include_watermark_note"):
+        text = f"{text} | {cfg.watermark_text}"
+    c.drawCentredString(PAGE_W / 2, y + 2, text)
 
 
 class PayStubRenderer:
@@ -550,7 +559,7 @@ class PayStubRenderer:
         y -= 16
 
         # ── Taxable wages note (ties the stub to the W-2) ─
-        c.setFont("Helvetica", 7.5)
+        c.setFont(FONT_PRIMARY, 7.5)
         c.setFillColor(COLOR_LABEL)
         c.drawString(
             MARGIN + 4, y - 10,
@@ -565,7 +574,7 @@ class PayStubRenderer:
         vac_accrued = round(rng.uniform(40, 160), 1)
         sick_accrued = round(rng.uniform(24, 80), 1)
 
-        c.setFont("Helvetica", 8)
+        c.setFont(FONT_PRIMARY, 8)
         c.setFillColor(COLOR_VALUE)
         c.drawString(
             MARGIN + 4, y - 12,
@@ -578,7 +587,7 @@ class PayStubRenderer:
         y -= 24
 
         # ── Direct deposit notice ────────────────────────
-        c.setFont("Helvetica-Oblique", 7.5)
+        c.setFont(FONT_ITALIC, 7.5)
         c.setFillColor(COLOR_LABEL)
         c.drawString(
             MARGIN + 4, y - 10,
@@ -619,7 +628,7 @@ def generate_paystub_batch(
             annual_incomes[i % len(annual_incomes)]
             if annual_incomes
             else random.Random(seed * 71).uniform(
-                35000, 180000
+                cfg.income_min, cfg.income_max
             )
         )
         profile = gen.generate(

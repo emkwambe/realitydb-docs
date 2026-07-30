@@ -29,6 +29,7 @@ from typing import Optional, List
 import os
 import random
 
+from realitydb_docs.config import cfg
 from realitydb_docs.profile import (
     BorrowerProfile,
     FinancialCaseGenerator,
@@ -170,7 +171,7 @@ def _build_data(
     term = _weighted(rng, [("30 Years", 70), ("15 Years", 20), ("20 Years", 10)])
 
     if loan_amount is None:
-        loan_amount = round(rng.uniform(150_000, 750_000), -3)
+        loan_amount = round(rng.uniform(*cfg.loan_amount_range), -3)
 
     # ── Section 2 — property ──
     if property_value is None:
@@ -302,7 +303,7 @@ class LoanApplicationRenderer:
         c.translate(self.width / 2, self.height / 2)
         c.rotate(45)
         c.setFont("Helvetica-Bold", 36)
-        c.drawCentredString(0, 0, "SYNTHETIC - NOT VALID")
+        c.drawCentredString(0, 0, cfg.watermark_text)
         c.restoreState()
 
     def _footer(self, c):
@@ -311,8 +312,7 @@ class LoanApplicationRenderer:
         c.setFont("Helvetica", 8)
         c.drawCentredString(
             self.width / 2, 36,
-            "(c) 2026 Mpingo Systems LLC | RealityDB Synthetic Documents | "
-            "For testing and development only",
+            cfg.footer_text,
         )
         c.restoreState()
 
@@ -730,9 +730,9 @@ def generate_loan_application(
     """
     rng = random.Random(seed)
     if annual_income is None:
-        annual_income = rng.uniform(36_000, 180_000)
+        annual_income = rng.uniform(cfg.income_min, cfg.income_max)
     if loan_amount is None:
-        loan_amount = round(rng.uniform(150_000, 750_000), -3)
+        loan_amount = round(rng.uniform(*cfg.loan_amount_range), -3)
     if property_value is None:
         # LTV lands in 70-90% by construction.
         property_value = round(loan_amount / rng.uniform(0.70, 0.90), -3)

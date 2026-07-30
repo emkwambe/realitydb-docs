@@ -16,12 +16,70 @@ from realitydb_docs.paystub import (
     TOTAL_PERIODS,
     generate_paystub_batch,
 )
-from realitydb_docs.packet import SCENARIOS, generate_case_pack
+from realitydb_docs.config import cfg
+from realitydb_docs.packet import generate_case_pack
 
 # Subcommands understood by main(). Anything else falls through to the
 # original flat-flag interface (--w2-count/--bank-count), which shipped
 # first and is still used by scripts, so it must keep working.
-SUBCOMMANDS = ("loan-app", "w2", "bank-statement", "paystub", "packet")
+SUBCOMMANDS = (
+    "loan-app", "w2", "bank-statement", "paystub", "packet",
+    "scenarios", "alignments",
+)
+
+
+def _scenarios_command(argv):
+    """`cli.py scenarios` — list what config/scenarios.yaml defines."""
+    argparse.ArgumentParser(
+        prog="cli.py scenarios",
+        description="List scenarios defined in config/scenarios.yaml.",
+    ).parse_args(argv)
+
+    names = cfg.list_scenarios()
+    if not names:
+        print("No scenarios defined in config/scenarios.yaml.")
+        return names
+
+    print("Available scenarios:")
+    width = max(len(n) for n in names)
+    for name in names:
+        scenario = cfg.get_scenario(name)
+        summary = " ".join(
+            (scenario.get("description") or "").split()
+        )
+        income = scenario.get("annual_income")
+        dti = scenario.get("dti_target")
+        print(f"  {name:<{width}}  — {summary}")
+        if income is not None and dti is not None:
+            print(
+                f"  {'':<{width}}    income ${income:,} | "
+                f"DTI target {dti:.0%} | "
+                f"LTV {scenario['loan_amount'] / scenario['property_value']:.1%}"
+            )
+    print(f"\nDefined in {cfg.describe()['scenarios.yaml']}")
+    return names
+
+
+def _alignments_command(argv):
+    """`cli.py alignments` — list alignment classes and their status."""
+    argparse.ArgumentParser(
+        prog="cli.py alignments",
+        description="List alignment classes defined in config/scenarios.yaml.",
+    ).parse_args(argv)
+
+    codes = cfg.list_alignments(available_only=False)
+    if not codes:
+        print("No alignment classes defined in config/scenarios.yaml.")
+        return codes
+
+    print("Alignment classes:")
+    for code in codes:
+        entry = cfg.get_alignment(code)
+        status = "[AVAILABLE]" if entry.get("available") else "[COMING]   "
+        print(f"  {code}  {status} {entry.get('label', '')}")
+    available = cfg.list_alignments()
+    print(f"\nAvailable now: {', '.join(available) or 'none'}")
+    return codes
 
 
 def _parse_distribution(raw, count):
@@ -40,10 +98,10 @@ def _parse_distribution(raw, count):
             )
         scenario, _, number = part.partition(":")
         scenario = scenario.strip()
-        if scenario not in SCENARIOS:
+        if scenario not in cfg.list_scenarios():
             raise SystemExit(
                 f"--distribution: unknown scenario {scenario!r}; "
-                f"choose from {sorted(SCENARIOS)}"
+                f"choose from {sorted(cfg.list_scenarios())}"
             )
         try:
             distribution[scenario] = int(number)
@@ -240,12 +298,17 @@ def main():
             return _paystub_command(argv)
         if command == "packet":
             return _packet_command(argv)
+        if command == "scenarios":
+            return _scenarios_command(argv)
+        if command == "alignments":
+            return _alignments_command(argv)
         return _bank_statement_command(argv)
 
     parser = argparse.ArgumentParser(
         description="Generate a synthetic document set for PacketWise testing.",
         epilog="Subcommands: w2 | bank-statement | loan-app | paystub | "
-               "packet (e.g. `cli.py packet --count 9 --output output/`)",
+               "packet | scenarios | alignments "
+               "(e.g. `cli.py packet --count 9 --output output/`)",
     )
     parser.add_argument("--output-dir", default="output",
                         help="directory for generated PDFs (default: output)")

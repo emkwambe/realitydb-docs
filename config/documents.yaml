@@ -1,0 +1,82 @@
+# RealityDB Document Formatting
+# ==============================
+# Visual constants for the document renderers.
+# Change formatting here — no code changes needed.
+#
+# WHAT ACTUALLY READS THIS FILE, as of Sprint 8:
+#
+#   watermark.text          w2.py, bank_statement.py, loan_app.py, paystub.py
+#   watermark.font_size     paystub.py
+#   watermark.opacity       paystub.py
+#   colors.*                paystub.py
+#   fonts.*                 paystub.py
+#   margins.page_inch       paystub.py
+#   footer.text             paystub.py, loan_app.py
+#   legal.*                 packet.py (case manifest)
+#
+# w2.py, bank_statement.py and loan_app.py keep their own palettes: each is a
+# deliberate imitation of a different real form and they do not share a scheme.
+# Consolidating them would need a per-document palette structure, which is not
+# what this file is. Sections are annotated below rather than left to imply
+# more coverage than they have.
+#
+# Note: literal characters are used rather than \u escapes. YAML processes
+# escapes in double-quoted scalars but NOT in block scalars, so an escape in a
+# ">" block would ship as the literal text "©".
+
+watermark:
+  text: "SYNTHETIC — NOT VALID"
+  font_size: 36
+  opacity: 0.18
+  rotation: 45
+
+# Consumed by paystub.py only.
+colors:
+  header_bg: "#1a3a6b"
+  header_text: "#ffffff"
+  section_bg: "#e8edf4"
+  border: "#cbd5e1"
+  label: "#6b7280"
+  value: "#111827"
+  success_bg: "#166534"
+  success_text: "#ffffff"
+  warning_bg: "#92400e"
+  warning_text: "#ffffff"
+  danger_bg: "#991b1b"
+  danger_text: "#ffffff"
+  row_alt: "#f1f5f9"
+  row_normal: "#ffffff"
+  watermark: "#d1d5db"
+
+# Consumed by paystub.py only.
+fonts:
+  primary: "Helvetica"
+  bold: "Helvetica-Bold"
+  italic: "Helvetica-Oblique"
+  label_size: 7.5
+  value_size: 9.0
+  header_size: 13.0
+  footer_size: 6.5
+  section_size: 7.5
+
+margins:
+  # Consumed by paystub.py.
+  page_inch: 0.65
+  # Declared for reference. w2.py owns its own padding constants, which are
+  # documented in place alongside the geometry defects they fixed.
+  box_padding_left: 4
+  box_padding_top: 2
+  min_text_margin: 3
+
+footer:
+  text: "© 2026 Mpingo Systems LLC | RealityDB Synthetic Documents | For testing and development only"
+  include_watermark_note: true
+
+legal:
+  watermark_required: true
+  synthetic_marking: "SYNTHETIC — NOT VALID"
+  ssn_range_note: "900-xx-xxxx (never issued by the SSA)"
+  prohibited_uses:
+    - "Submitting to real financial institutions"
+    - "Identity fraud or deception"
+    - "Discriminatory AI model training"

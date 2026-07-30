@@ -1,0 +1,66 @@
+# RealityDB Synthetic Distributions
+# ===================================
+# Value ranges for synthetic generation.
+#
+# IMPORTANT: These are synthetic parameter ranges chosen to produce
+# realistic-looking documents. They are NOT sampled from real datasets.
+# See docs/research/DATA-SOURCES.md for what would be required to make
+# distributional claims.
+
+income:
+  # Fallback range for random generation, used by the standalone batch
+  # functions when no target income is supplied. Case packs always specify
+  # income per scenario and never reach this.
+  min: 35000
+  max: 180000
+
+assets:
+  # Checking balance as multiple of monthly income
+  checking_months_min: 1.5
+  checking_months_max: 3.0
+  # Savings balance as multiple of monthly income
+  savings_months_min: 2.0
+  savings_months_max: 8.0
+  # Retirement as multiple of annual income
+  retirement_income_ratio_min: 0.5
+  retirement_income_ratio_max: 3.0
+
+liabilities:
+  # Monthly credit card minimum payment
+  credit_card_min: 25
+  credit_card_max: 150
+  # Other monthly debt
+  other_debt_min: 0
+  other_debt_max: 100
+  # How the remaining DTI budget splits between the two instalment loans
+  car_share: 0.60
+  student_share: 0.40
+
+loan:
+  amount_min: 150000
+  amount_max: 750000
+  term_years: [30, 15, 20]
+  term_weights: [70, 20, 10]  # % probability
+  types: [Conventional, FHA, VA]
+  type_weights: [70, 20, 10]
+
+employment:
+  years_at_job_min: 0.5
+  years_at_job_max: 12.0
+  types: [Employed, Self-Employed]
+  type_weights: [80, 20]
+
+borrower:
+  age_min: 25
+  age_max: 65
+  years_at_address_min: 1
+  years_at_address_max: 12
+
+transactions:
+  # Number of variable spending transactions per month
+  variable_per_month_min: 8
+  variable_per_month_max: 16
+  # Payroll deposit variation around monthly gross
+  payroll_variation: 0.03    # +/-3%
+  # Income variation at profile generation
+  income_variation: 0.02     # +/-2%

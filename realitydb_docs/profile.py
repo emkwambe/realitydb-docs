@@ -44,6 +44,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
+from realitydb_docs.config import cfg
+
 
 # ─── Name pools (Census-weighted) ────────────────────────
 
@@ -166,10 +168,17 @@ EMAIL_DOMAINS = [
     "hotmail.com", "icloud.com", "aol.com",
 ]
 
-# 2024 Social Security wage base.
-SS_WAGE_BASE = 160200
-SS_RATE = 0.062
-MEDICARE_RATE = 0.0145
+# Tax constants, sourced from config/financial.yaml. These names are re-exported
+# deliberately: w2.py, paystub.py and packet.py all import them from here, so
+# sourcing them from config in this one place propagates to every renderer
+# without touching any of them.
+#
+# They are read once at import. Editing financial.yaml and calling cfg.reload()
+# does NOT move them — restart the process instead. Annual IRS updates are a
+# deploy, not a hot reload.
+SS_WAGE_BASE = cfg.ss_wage_base
+SS_RATE = cfg.ss_rate
+MEDICARE_RATE = cfg.medicare_rate
 
 
 def _make_rngs(seed: int) -> dict:
@@ -395,7 +404,7 @@ class FinancialCaseGenerator:
         property_value: float,
         dti_target: float = 0.36,
         scenario: str = "approved",
-        tax_year: int = 2024,
+        tax_year: Optional[int] = None,
         statement_month_1: int = 10,
         statement_month_2: int = 11,
         credit_score: Optional[int] = None,
@@ -407,6 +416,11 @@ class FinancialCaseGenerator:
         will describe the same person with
         consistent financial attributes.
         """
+        # Resolved here rather than as a default argument so a change to
+        # financial.yaml's tax_year is picked up without re-importing.
+        if tax_year is None:
+            tax_year = cfg.tax_year
+
         rngs = _make_rngs(seed)
 
         # ── Identity ─────────────────────────────────────
@@ -414,12 +428,18 @@ class FinancialCaseGenerator:
         last = rngs["name"].choice(LAST_NAMES)
 
         # SSN: always 900-XX-XXXX (never issued by the SSA)
-        ssn_mid = rngs["misc"].randint(10, 99)
-        ssn_end = rngs["misc"].randint(1000, 9999)
-        ssn = f"900-{ssn_mid:02d}-{ssn_end}"
+        ssn_cfg = cfg.ssn_config
+        ssn_mid = rngs["misc"].randint(
+            ssn_cfg["middle_min"], ssn_cfg["middle_max"]
+        )
+        ssn_end = rngs["misc"].randint(
+            ssn_cfg["suffix_min"], ssn_cfg["suffix_max"]
+        )
+        ssn = f"{ssn_cfg['prefix']}-{ssn_mid:02d}-{ssn_end}"
 
-        # DOB: age 25–65
-        age = rngs["misc"].randint(25, 65)
+        # DOB
+        age_min, age_max = cfg.age_range
+        age = rngs["misc"].randint(age_min, age_max)
         today = date(tax_year, 11, 15)
         dob = today.replace(year=today.year - age)
 
@@ -442,17 +462,19 @@ class FinancialCaseGenerator:
         city, state, zip_code = rngs["address"].choice(
             CITIES_STATES
         )
-        years_at_addr = rngs["address"].randint(1, 12)
+        addr_min, addr_max = cfg.years_at_address_range
+        years_at_addr = rngs["address"].randint(addr_min, addr_max)
 
         # ── Employment ───────────────────────────────────
         employer = rngs["employer"].choice(EMPLOYERS)
         title = rngs["employer"].choice(JOB_TITLES)
+        emp_types, emp_weights = cfg.employment_types
         emp_type = rngs["employer"].choices(
-            ["Employed", "Self-Employed"],
-            weights=[80, 20]
+            emp_types, weights=emp_weights
         )[0]
+        job_min, job_max = cfg.years_at_job_range
         years_at_job = round(
-            rngs["employer"].uniform(0.5, 12), 1
+            rngs["employer"].uniform(job_min, job_max), 1
         )
         job_months = int(years_at_job * 12)
         emp_start = today - timedelta(days=job_months * 30)
@@ -462,32 +484,41 @@ class FinancialCaseGenerator:
         employer_ein = f"{ein_prefix}-{ein_suffix}"
 
         # ── Income ───────────────────────────────────────
-        # Add ±2% variation so documents look natural
+        # Add a small variation so documents look natural
         # while staying consistent
-        income_var = rngs["income"].uniform(0.98, 1.02)
+        iv = cfg.income_variation
+        income_var = rngs["income"].uniform(1 - iv, 1 + iv)
         actual_income = annual_income * income_var
 
-        federal_rate = rngs["income"].uniform(0.12, 0.22)
-        state_rate = rngs["income"].uniform(0.03, 0.07)
+        fed_min, fed_max = cfg.withholding_federal_range
+        federal_rate = rngs["income"].uniform(fed_min, fed_max)
+        state_min, state_max = cfg.withholding_state_range
+        state_rate = rngs["income"].uniform(state_min, state_max)
         # Deferral caps at 8%, not 10%. W-2 box 1 is gross minus the pre-tax
         # deferral, so the deferral rate IS the variance a lender sees between
         # the gross income stated on the 1003 and the wages documented on the
         # W-2. A 10% rate sits exactly on the usual 10% income-variance
         # tolerance, where rounding on the printed form decides whether the
-        # check fires. 8% leaves the comparison unambiguous.
+        # check fires. 8% leaves the comparison unambiguous. The cap lives in
+        # config/financial.yaml as retirement.cap.
         retirement_rate = rngs["income"].choice(
-            [0.0, 0.03, 0.05, 0.06, 0.08]
+            cfg.capped_retirement_options
         )
 
         # ── Liabilities sized to DTI target ──────────────
         monthly = actual_income / 12
 
-        # Housing uses 28% rule as anchor
-        housing = monthly * rngs["debt"].uniform(0.24, 0.32)
+        # Housing uses the 28% rule as anchor
+        housing_min, housing_max = cfg.housing_ratio_range
+        housing = monthly * rngs["debt"].uniform(
+            housing_min, housing_max
+        )
 
         # Small credit card and other minimums
-        cc_min = rngs["debt"].uniform(25, 150)
-        other = rngs["debt"].uniform(0, 100)
+        cc_lo, cc_hi = cfg.credit_card_range
+        cc_min = rngs["debt"].uniform(cc_lo, cc_hi)
+        other_lo, other_hi = cfg.other_debt_range
+        other = rngs["debt"].uniform(other_lo, other_hi)
 
         # Remaining debt budget to hit DTI target.
         # Every obligation counts against the target, including the credit
@@ -500,19 +531,27 @@ class FinancialCaseGenerator:
         )
         remaining_budget = max(remaining_budget, 0)
 
-        # Split remaining into car (60%) + student (40%)
-        car = remaining_budget * 0.60
-        student = remaining_budget * 0.40
+        # Split remaining between the two instalment loans
+        car_share, student_share = cfg.debt_shares
+        car = remaining_budget * car_share
+        student = remaining_budget * student_share
 
         # ── Assets ───────────────────────────────────────
-        # Checking = 1.5–3x monthly income
-        # This becomes the bank statement ending balance
-        checking = monthly * rngs["financial"].uniform(1.5, 3.0)
-        savings = monthly * rngs["financial"].uniform(2.0, 8.0)
+        # Checking is a multiple of monthly income and becomes the bank
+        # statement's ending balance.
+        ch_min, ch_max = cfg.checking_months_range
+        checking = monthly * rngs["financial"].uniform(ch_min, ch_max)
+        sv_min, sv_max = cfg.savings_months_range
+        savings = monthly * rngs["financial"].uniform(sv_min, sv_max)
+        rb_min, rb_max = cfg.retirement_balance_range
         retirement_bal = (
             actual_income
-            * rngs["financial"].uniform(0.5, 3.0)
+            * rngs["financial"].uniform(rb_min, rb_max)
         )
+
+        # ── Loan product ─────────────────────────────────
+        loan_types, loan_type_weights = cfg.loan_types
+        loan_terms, loan_term_weights = cfg.loan_terms
 
         return BorrowerProfile(
             seed=seed,
@@ -551,12 +590,10 @@ class FinancialCaseGenerator:
             property_value=property_value,
             loan_purpose="Purchase",
             loan_type=rngs["misc"].choices(
-                ["Conventional", "FHA", "VA"],
-                weights=[70, 20, 10]
+                loan_types, weights=loan_type_weights
             )[0],
             amortization_years=rngs["misc"].choices(
-                [30, 15, 20],
-                weights=[70, 20, 10]
+                loan_terms, weights=loan_term_weights
             )[0],
             expected_decision=scenario,
             tax_year=tax_year,

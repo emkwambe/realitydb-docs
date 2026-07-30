@@ -60,6 +60,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
+from realitydb_docs.config import cfg
 from realitydb_docs.profile import (
     BorrowerProfile,
     FinancialCaseGenerator,
@@ -72,46 +73,42 @@ from realitydb_docs.bank_statement import BankStatementRenderer
 from realitydb_docs.loan_app import LoanAppRenderer
 from realitydb_docs.paystub import PayStubRenderer, TOTAL_PERIODS
 
-GENERATOR_VERSION = "0.4.0"
+GENERATOR_VERSION = "0.5.0"
 
-# Underwriting thresholds the expected decision is reasoned against. These
-# mirror PacketWise's config/rules.yaml; they are restated here because a case
-# pack ships without PacketWise and its evaluation layer has to be
-# self-describing.
-DTI_QM_THRESHOLD = 0.43
-DTI_MAX_THRESHOLD = 0.50
-LTV_MAX_THRESHOLD = 0.80
-MIN_CREDIT_SCORE = 620
+# Underwriting thresholds the expected decision is reasoned against, from
+# config/financial.yaml. A case pack ships without PacketWise, so its
+# evaluation layer restates them; sourcing both from YAML is what stops the two
+# copies drifting.
+DTI_QM_THRESHOLD = cfg.dti_threshold_qm
+DTI_MAX_THRESHOLD = cfg.dti_threshold_max
+LTV_MAX_THRESHOLD = cfg.ltv_threshold
+MIN_CREDIT_SCORE = cfg.min_credit_score
 
 # The two pay stub periods shipped with each case: the current period and the
 # one before it, which is what a lender asks for to confirm income is not a
 # one-off.
 STUB_PERIODS = (22, 21)
 
-# Default scenario parameters
-SCENARIOS = {
-    "approved": {
-        "annual_income": 102000,
-        "loan_amount": 320000,
-        "property_value": 420000,
-        "dti_target": 0.36,
-    },
-    "flagged": {
-        "annual_income": 74400,
-        "loan_amount": 380000,
-        "property_value": 460000,
-        "dti_target": 0.45,
-    },
-    "rejected": {
-        "annual_income": 57600,
-        "loan_amount": 450000,
-        "property_value": 500000,
-        "dti_target": 0.55,
-    },
-}
+# Scenario tiers the default pack distribution splits across. Named here
+# because generate_case_pack's even split has to know which three; every other
+# scenario in scenarios.yaml is reachable via --distribution or
+# generate_case(scenario=...).
+DEFAULT_PACK_SCENARIOS = ("approved", "flagged", "rejected")
 
 
-def _methodology() -> dict:
+def _get_scenarios() -> dict:
+    """Scenario parameters from config/scenarios.yaml.
+
+    A function rather than a module-level dict so that enabling a scenario in
+    YAML takes effect without re-importing, and so a config override directory
+    is honoured.
+    """
+    return {
+        name: cfg.scenario_params(name) for name in cfg.list_scenarios()
+    }
+
+
+def _methodology(scenario_names=None) -> dict:
     """How the financial parameters are chosen.
 
     Replaces an earlier `data_sources` list that named IRS SOI, HMDA, CFPB and
@@ -119,15 +116,28 @@ def _methodology() -> dict:
     them, so shipping that list in a customer-facing manifest asserted a
     provenance the code does not have.
 
-    Every range below is computed from SCENARIOS rather than written out, so a
-    change to a scenario cannot leave the stated methodology behind.
+    Ranges are computed rather than written out, so a change to a scenario
+    cannot leave the stated methodology behind.
+
+    `scenario_names` scopes the ranges to the scenarios actually present. A
+    manifest that quoted the range across every scenario defined in YAML would
+    misdescribe its own contents the moment an unused scenario was enabled.
     """
-    incomes = [s["annual_income"] for s in SCENARIOS.values()]
-    dtis = [s["dti_target"] for s in SCENARIOS.values()]
+    scenarios = _get_scenarios()
+    if scenario_names:
+        scenarios = {
+            k: v for k, v in scenarios.items() if k in set(scenario_names)
+        }
+    if not scenarios:
+        scenarios = _get_scenarios()
+
+    incomes = [s["annual_income"] for s in scenarios.values()]
+    dtis = [s["dti_target"] for s in scenarios.values()]
     ltvs = [
-        s["loan_amount"] / s["property_value"] for s in SCENARIOS.values()
+        s["loan_amount"] / s["property_value"] for s in scenarios.values()
     ]
     return {
+        "scenarios_described": sorted(scenarios),
         "note": (
             "Financial parameters are synthetic and chosen to produce "
             "specific, reproducible underwriting outcomes. They are not "
@@ -137,7 +147,7 @@ def _methodology() -> dict:
         ),
         "income_range": (
             f"${min(incomes):,} - ${max(incomes):,} "
-            f"(+/-2% per-case variation)"
+            f"(+/-{cfg.income_variation:.0%} per-case variation)"
         ),
         "dti_range": f"{min(dtis):.0%} - {max(dtis):.0%}",
         "ltv_range": f"{min(ltvs):.1%} - {max(ltvs):.1%}",
@@ -147,12 +157,14 @@ def _methodology() -> dict:
             "this pack states a credit score."
         ),
         "distribution": (
-            "Three scenario tiers, sized by DTI against the thresholds in "
-            "expected_decision.json: approved (DTI <=43%), flagged "
-            "(DTI 43-50%), rejected (DTI >50%). Realised DTI equals the "
-            "scenario's target exactly. LTV is fixed per tier and is a "
-            "secondary factor: the flagged and rejected tiers also exceed "
-            "the 80% LTV limit."
+            f"Scenario tiers sized by DTI against the thresholds in "
+            f"expected_decision.json: approved (DTI <="
+            f"{DTI_QM_THRESHOLD:.0%}), flagged (DTI "
+            f"{DTI_QM_THRESHOLD:.0%}-{DTI_MAX_THRESHOLD:.0%}), rejected "
+            f"(DTI >{DTI_MAX_THRESHOLD:.0%}). Realised DTI equals the "
+            f"scenario's target exactly. LTV is fixed per tier and is a "
+            f"secondary factor: the flagged and rejected tiers also exceed "
+            f"the {LTV_MAX_THRESHOLD:.0%} LTV limit."
         ),
         "reproducibility": (
             "Same seed and same generator_version reproduce the same case."
@@ -270,14 +282,15 @@ class CaseBundler:
                 f"(perfectly aligned) exists in this version. Controlled "
                 f"misalignment (A1-A5) is Sprint 8."
             )
-        if scenario not in SCENARIOS:
+        all_scenarios = _get_scenarios()
+        if scenario not in all_scenarios:
             raise ValueError(
                 f"unknown scenario {scenario!r}; "
-                f"choose from {sorted(SCENARIOS)}"
+                f"choose from {sorted(all_scenarios)}"
             )
 
         # Get scenario defaults
-        defaults = SCENARIOS[scenario]
+        defaults = all_scenarios[scenario]
         income = annual_income or defaults["annual_income"]
         loan = loan_amount or defaults["loan_amount"]
         prop = property_value or defaults["property_value"]
@@ -538,7 +551,7 @@ class CaseBundler:
                 k: f"documents/{os.path.basename(v)}"
                 for k, v in doc_paths.items()
             },
-            "methodology": _methodology(),
+            "methodology": _methodology([profile.expected_decision]),
             "legal": {
                 "synthetic": True,
                 "watermark": "SYNTHETIC — NOT VALID",
@@ -1268,12 +1281,12 @@ https://realitydb.dev/financial-cases/
 
 def _default_distribution(count: int) -> dict:
     """Even split across the three scenarios, remainder to the front."""
-    per_scenario = count // 3
-    remainder = count % 3
+    tiers = list(DEFAULT_PACK_SCENARIOS)
+    per_scenario = count // len(tiers)
+    remainder = count % len(tiers)
     return {
-        "approved": per_scenario + (1 if remainder > 0 else 0),
-        "flagged": per_scenario + (1 if remainder > 1 else 0),
-        "rejected": per_scenario,
+        tier: per_scenario + (1 if i < remainder else 0)
+        for i, tier in enumerate(tiers)
     }
 
 
@@ -1308,11 +1321,12 @@ def generate_case_pack(
     if distribution is None:
         distribution = _default_distribution(count)
 
-    unknown = set(distribution) - set(SCENARIOS)
+    known = set(_get_scenarios())
+    unknown = set(distribution) - known
     if unknown:
         raise ValueError(
             f"unknown scenario(s) in distribution: {sorted(unknown)}; "
-            f"choose from {sorted(SCENARIOS)}"
+            f"choose from {sorted(known)}"
         )
     if sum(distribution.values()) != count:
         raise ValueError(
@@ -1388,7 +1402,7 @@ def generate_case_pack(
         "total_documents": count * 6,
         "truth_files_per_case": 5,
         "evaluation_files_per_case": 3,
-        "methodology": _methodology(),
+        "methodology": _methodology(list(distribution)),
         "cases": case_summaries,
     }
 
