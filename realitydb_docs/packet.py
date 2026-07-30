@@ -111,6 +111,55 @@ SCENARIOS = {
 }
 
 
+def _methodology() -> dict:
+    """How the financial parameters are chosen.
+
+    Replaces an earlier `data_sources` list that named IRS SOI, HMDA, CFPB and
+    Census ACS. Nothing in the generator derives a distribution from any of
+    them, so shipping that list in a customer-facing manifest asserted a
+    provenance the code does not have.
+
+    Every range below is computed from SCENARIOS rather than written out, so a
+    change to a scenario cannot leave the stated methodology behind.
+    """
+    incomes = [s["annual_income"] for s in SCENARIOS.values()]
+    dtis = [s["dti_target"] for s in SCENARIOS.values()]
+    ltvs = [
+        s["loan_amount"] / s["property_value"] for s in SCENARIOS.values()
+    ]
+    return {
+        "note": (
+            "Financial parameters are synthetic and chosen to produce "
+            "specific, reproducible underwriting outcomes. They are not "
+            "sampled from, or calibrated against, any published dataset. "
+            "See docs/research/DATA-SOURCES.md for what did and did not "
+            "inform the parameter ranges."
+        ),
+        "income_range": (
+            f"${min(incomes):,} - ${max(incomes):,} "
+            f"(+/-2% per-case variation)"
+        ),
+        "dti_range": f"{min(dtis):.0%} - {max(dtis):.0%}",
+        "ltv_range": f"{min(ltvs):.1%} - {max(ltvs):.1%}",
+        "credit_score": (
+            "Not modelled. BorrowerProfile carries an optional credit_score "
+            "for callers that supply one; case packs do not, so no case in "
+            "this pack states a credit score."
+        ),
+        "distribution": (
+            "Three scenario tiers, sized by DTI against the thresholds in "
+            "expected_decision.json: approved (DTI <=43%), flagged "
+            "(DTI 43-50%), rejected (DTI >50%). Realised DTI equals the "
+            "scenario's target exactly. LTV is fixed per tier and is a "
+            "secondary factor: the flagged and rejected tiers also exceed "
+            "the 80% LTV limit."
+        ),
+        "reproducibility": (
+            "Same seed and same generator_version reproduce the same case."
+        ),
+    }
+
+
 def _as_printed_dollars(value: float) -> float:
     """The whole-dollar figure the 1003 actually prints.
 
@@ -489,12 +538,7 @@ class CaseBundler:
                 k: f"documents/{os.path.basename(v)}"
                 for k, v in doc_paths.items()
             },
-            "data_sources": [
-                "IRS SOI 2022",
-                "HMDA 2023",
-                "CFPB Credit Score Trends 2023",
-                "Census ACS 2022",
-            ],
+            "methodology": _methodology(),
             "legal": {
                 "synthetic": True,
                 "watermark": "SYNTHETIC — NOT VALID",
@@ -1344,11 +1388,7 @@ def generate_case_pack(
         "total_documents": count * 6,
         "truth_files_per_case": 5,
         "evaluation_files_per_case": 3,
-        "data_sources": [
-            "IRS SOI 2022",
-            "HMDA 2023",
-            "CFPB Credit Score Trends 2023",
-        ],
+        "methodology": _methodology(),
         "cases": case_summaries,
     }
 
