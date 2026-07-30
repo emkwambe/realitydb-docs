@@ -1,21 +1,42 @@
 """RealityDB Bank Statement Renderer using ReportLab.
 
-Generates two-month synthetic bank statement PDFs in three bank styles.
-Every document is deterministic for a given seed: the same seed always
-produces the same borrower, the same transactions and the same balances.
+Since Sprint 5 a statement is a VIEW of a BorrowerProfile. The account
+holder, the employer behind the payroll deposit, the recurring debt amounts
+and the ending balance all come from the profile, so the statement describes
+the same borrower — with the same income and the same obligations — as the
+W-2 and the loan application in the same packet.
 
-The `annual_income` parameter exists so a statement can be generated to
-match a W-2 produced by `w2.generate_synthetic_w2_batch(target_annual_income=...)`,
-keeping documented income consistent across a loan packet.
+  from realitydb_docs.profile import FinancialCaseGenerator
+  from realitydb_docs.bank_statement import BankStatementRenderer
+
+  profile = FinancialCaseGenerator().generate(seed=42, annual_income=87000,
+                                              loan_amount=320000,
+                                              property_value=420000)
+  BankStatementRenderer(profile, month=10).render("output/bank_oct.pdf")
+
+Recurring debits carry the profile's EXACT monthly amounts, so a downstream
+DTI computed off the statement reconciles with the DTI printed on the 1003.
+The beginning balance is derived so the final running balance equals
+profile.checking_balance exactly — the statement reconciles with the assets
+declared on the application.
+
+The pre-Sprint-5 independent generator (_build_statement_data +
+BankStatementStyleRenderer) is preserved for callers that build a statement
+from explicit values, but it does not participate in profile consistency and
+should not be wired into new packet generation.
 """
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
-from datetime import datetime
 import calendar
 import random
 import os
+
+from realitydb_docs.profile import (
+    BorrowerProfile,
+    FinancialCaseGenerator,
+)
 
 # ─── Style templates ────────────────────────────────────────────────
 # Each style is a complete visual identity: header colour, bank name,
@@ -68,6 +89,41 @@ STYLES: Dict[str, Dict[str, Any]] = {
 CREDIT_RGB = (0.02, 0.55, 0.24)   # green
 DEBIT_RGB = (0.72, 0.13, 0.13)    # red
 
+# ─── Column geometry (Sprint 5: alignment fix) ──────────────────────
+#
+# Before Sprint 5 the header labels were all drawn left-aligned at
+# `column_left + 4` while the three money values were drawn RIGHT-aligned at
+# `column_right - 6`. Header and value therefore sat at opposite ends of the
+# same column and the table read as misaligned on every statement.
+#
+# These constants are now the single source of truth for both the header row
+# and the data rows. Money columns share a right edge between header and
+# value; text columns share a left edge. Alignment no longer depends on the
+# content of either row.
+COL_DATE_X        = 40
+COL_DESC_X        = 110
+COL_DEBIT_X       = 360
+COL_CREDIT_X      = 430
+COL_BALANCE_X     = 500
+
+# Column widths for header labels
+COL_DATE_W        = 65
+COL_DESC_W        = 245
+COL_DEBIT_W       = 65
+COL_CREDIT_W      = 65
+COL_BALANCE_W     = 72    # 70 in the plan; 72 closes the table on the
+                          # right margin (612 - 40), so the header band
+                          # spans margin to margin.
+
+TABLE_LEFT = COL_DATE_X
+TABLE_RIGHT = COL_BALANCE_X + COL_BALANCE_W
+TABLE_W = TABLE_RIGHT - TABLE_LEFT
+MARGIN = COL_DATE_X
+
+# Legacy alias. The pre-Sprint-5 renderer derived column positions by
+# accumulating these widths from self.margin.
+COL_WIDTHS = [COL_DATE_W, COL_DESC_W, COL_DEBIT_W, COL_CREDIT_W, COL_BALANCE_W]
+
 FIRST_NAMES = ["James", "Mary", "Robert", "Patricia", "John", "Jennifer",
                "Michael", "Linda", "David", "Barbara", "Susan", "Daniel"]
 LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia",
@@ -117,11 +173,16 @@ class BankStatementData:
     months: List[MonthStatement] = field(default_factory=list)
 
 
-# ─── Transaction generation ─────────────────────────────────────────
-
 def _money(value: float) -> float:
     return round(value, 2)
 
+
+# ─── Legacy independent generation (pre-Sprint 5) ────────────────────
+#
+# DEPRECATED. These build a statement from values drawn independently of any
+# BorrowerProfile, which is exactly the defect Sprint 5 fixes: a statement
+# built this way names a different person than the W-2 beside it. Retained
+# only so callers that pass explicit values keep working.
 
 def _build_month(rng: random.Random, year: int, month: int,
                  beginning_balance: float,
@@ -161,12 +222,6 @@ def _build_month(rng: random.Random, year: int, month: int,
         ("student", "STUDENT LOAN PMT", rng.uniform(200, 800)),
     ]
     if debt_to_income_target is not None:
-        # Deterministic debt load: the loan-bearing obligations (auto and
-        # student loan) are sized to a share of monthly income instead of
-        # being drawn independently, so a packet's DTI is predictable.
-        # Everything else stays random but does not affect DTI — utilities,
-        # phone, internet, subscriptions and insurance are not loan payments,
-        # and housing is reconciled from the loan application.
         target_total = monthly_income * debt_to_income_target
         loan_items = [
             ("auto", "AUTO LOAN PMT", target_total * 0.60),
@@ -207,7 +262,12 @@ def _build_month(rng: random.Random, year: int, month: int,
             type="debit",
         ))
 
-    # ── Order by day, then compute the running balance ──
+    return _reconcile(entries, beginning_balance, year, month)
+
+
+def _reconcile(entries: List[Transaction], beginning_balance: float,
+               year: int, month: int) -> MonthStatement:
+    """Order by day, compute the running balance, drop overdrafts."""
     entries.sort(key=lambda t: int(t.date.split("/")[1]))
 
     balance = beginning_balance
@@ -228,6 +288,7 @@ def _build_month(rng: random.Random, year: int, month: int,
         tx.balance = _money(balance)
         kept.append(tx)
 
+    days_in_month = calendar.monthrange(year, month)[1]
     month_name = calendar.month_name[month]
     return MonthStatement(
         month=month,
@@ -245,6 +306,7 @@ def _build_statement_data(rng: random.Random, style: str,
                           annual_income: Optional[float],
                           year: int, month_1: int, month_2: int,
                           debt_to_income_target: Optional[float] = None) -> BankStatementData:
+    """DEPRECATED — see the module docstring. Independent of BorrowerProfile."""
     cfg = STYLES[style]
 
     holder = f"{rng.choice(FIRST_NAMES)} {rng.choice(LAST_NAMES)}"
@@ -281,12 +343,14 @@ def _build_statement_data(rng: random.Random, style: str,
 
 # ─── Rendering ──────────────────────────────────────────────────────
 
-# Date | Description | Debit | Credit | Balance
-COL_WIDTHS = [60, 220, 80, 80, 90]
 
+class BankStatementStyleRenderer:
+    """Renders a bank statement PDF from an explicit BankStatementData record.
 
-class BankStatementRenderer:
-    """Renders a two-month bank statement PDF in one of three bank styles."""
+    This is the low-level renderer, one page per month. Named
+    BankStatementRenderer before Sprint 5; that name now belongs to the
+    profile-driven renderer below.
+    """
 
     def __init__(self, style: str = "corporate"):
         if style not in STYLES:
@@ -294,17 +358,9 @@ class BankStatementRenderer:
         self.style = style
         self.cfg = STYLES[style]
         self.width, self.height = letter
-        self.margin = 45
+        self.margin = MARGIN
 
     # -- helpers ----------------------------------------------------
-
-    def _col_x(self):
-        """Left edge of each column."""
-        xs, x = [], self.margin
-        for w in COL_WIDTHS:
-            xs.append(x)
-            x += w
-        return xs
 
     def _watermark(self, c):
         """Diagonal SYNTHETIC marking on every page."""
@@ -320,6 +376,14 @@ class BankStatementRenderer:
         c.drawCentredString(0, 0, "SYNTHETIC - NOT VALID")
         c.restoreState()
 
+    def _fit(self, c, text, width, font, size):
+        """Truncate text so it cannot run into the next column."""
+        if c.stringWidth(text, font, size) <= width:
+            return text
+        while text and c.stringWidth(text + "…", font, size) > width:
+            text = text[:-1]
+        return text + "…"
+
     def _header(self, c, data: BankStatementData, month: MonthStatement):
         cfg = self.cfg
         h = cfg["header_height"]
@@ -334,15 +398,15 @@ class BankStatementRenderer:
         c.setFont(cfg["body_font"], 10)
         c.drawString(self.margin, top + h - 52, "ACCOUNT STATEMENT")
         c.setFont(cfg["body_font"], 9)
-        c.drawRightString(self.width - self.margin, top + h - 34,
+        c.drawRightString(TABLE_RIGHT, top + h - 34,
                           f"Statement period: {month.period_label}")
 
         if cfg["big_balance"]:
             c.setFont(cfg["bold_font"], 22)
-            c.drawRightString(self.width - self.margin, top + h - 66,
+            c.drawRightString(TABLE_RIGHT, top + h - 66,
                               f"${month.ending_balance:,.2f}")
             c.setFont(cfg["body_font"], 7)
-            c.drawRightString(self.width - self.margin, top + h - 78, "CURRENT BALANCE")
+            c.drawRightString(TABLE_RIGHT, top + h - 78, "CURRENT BALANCE")
 
         return top
 
@@ -361,6 +425,7 @@ class BankStatementRenderer:
             f"Account Holder: {data.account_holder}",
             f"Account Number: {data.account_number}",
             f"Routing Number: {data.routing_number}",
+            f"Address: {data.address}",
         ]
         right = [
             f"Beginning Balance: ${month.beginning_balance:,.2f}",
@@ -370,67 +435,70 @@ class BankStatementRenderer:
         ]
 
         for i, line in enumerate(left):
-            c.drawString(self.margin, y - i * 13, line)
+            c.drawString(self.margin, y - i * 13,
+                         self._fit(c, line, TABLE_W / 2 - 12, cfg["body_font"], 9))
         for i, line in enumerate(right):
             c.drawString(self.width / 2 + 10, y - i * 13, line)
 
         return y - max(len(left), len(right)) * 13 - 14
 
     def _table_header(self, c, y: float):
+        """Header row. Text columns share a LEFT edge with their values,
+        money columns share a RIGHT edge — see the column constants."""
         cfg = self.cfg
-        xs = self._col_x()
-        table_w = sum(COL_WIDTHS)
 
         c.setFillColorRGB(*cfg["accent_rgb"])
-        c.rect(self.margin, y - 4, table_w, 16, stroke=0, fill=1)
+        c.rect(TABLE_LEFT, y - 4, TABLE_W, 16, stroke=0, fill=1)
         c.setFillColorRGB(1, 1, 1)
         c.setFont(cfg["bold_font"], 8)
-        for x, label in zip(xs, ["Date", "Description", "Debit", "Credit", "Balance"]):
-            c.drawString(x + 4, y, label)
+
+        c.drawString(COL_DATE_X + 4, y, "Date")
+        c.drawString(COL_DESC_X, y, "Description")
+        c.drawRightString(COL_DEBIT_X + COL_DEBIT_W, y, "Debit")
+        c.drawRightString(COL_CREDIT_X + COL_CREDIT_W, y, "Credit")
+        c.drawRightString(COL_BALANCE_X + COL_BALANCE_W - 4, y, "Balance")
+
         c.setFillColorRGB(0, 0, 0)
         return y - 18
 
     def _row(self, c, tx: Transaction, y: float, shade: bool):
         cfg = self.cfg
-        xs = self._col_x()
-        table_w = sum(COL_WIDTHS)
 
         if cfg["zebra"] and shade:
             c.setFillColorRGB(0.965, 0.965, 0.965)
-            c.rect(self.margin, y - 3, table_w, cfg["row_height"], stroke=0, fill=1)
+            c.rect(TABLE_LEFT, y - 3, TABLE_W, cfg["row_height"], stroke=0, fill=1)
 
         c.setFillColorRGB(0, 0, 0)
         c.setFont(cfg["body_font"], 8)
-        c.drawString(xs[0] + 4, y, tx.date)
-        c.drawString(xs[1] + 4, y, tx.description[:34])
+        c.drawString(COL_DATE_X + 4, y, tx.date)
+        c.drawString(COL_DESC_X, y,
+                     self._fit(c, tx.description, COL_DESC_W - 8,
+                               cfg["body_font"], 8))
 
         if tx.type == "credit":
-            if cfg["colour_amounts"]:
-                c.setFillColorRGB(*CREDIT_RGB)
-            else:
-                c.setFillColorRGB(*CREDIT_RGB)
-            c.drawRightString(xs[3] + COL_WIDTHS[3] - 6, y, f"${tx.amount:,.2f}")
+            c.setFillColorRGB(*CREDIT_RGB)
+            c.drawRightString(COL_CREDIT_X + COL_CREDIT_W, y, f"${tx.amount:,.2f}")
         else:
             if cfg["colour_amounts"]:
                 c.setFillColorRGB(*DEBIT_RGB)
             else:
                 c.setFillColorRGB(0, 0, 0)
-            c.drawRightString(xs[2] + COL_WIDTHS[2] - 6, y, f"${tx.amount:,.2f}")
+            c.drawRightString(COL_DEBIT_X + COL_DEBIT_W, y, f"${tx.amount:,.2f}")
 
         c.setFillColorRGB(0, 0, 0)
-        c.drawRightString(xs[4] + COL_WIDTHS[4] - 6, y, f"${tx.balance:,.2f}")
+        c.drawRightString(COL_BALANCE_X + COL_BALANCE_W - 4, y, f"${tx.balance:,.2f}")
 
     def _footer(self, c, data: BankStatementData, page_no: int, total_pages: int):
         cfg = self.cfg
         c.setStrokeColorRGB(0.75, 0.75, 0.75)
         c.setLineWidth(0.5)
-        c.line(self.margin, 52, self.width - self.margin, 52)
+        c.line(self.margin, 52, TABLE_RIGHT, 52)
 
         c.setFillColorRGB(0.35, 0.35, 0.35)
         c.setFont(cfg["body_font"], 7)
         c.drawString(self.margin, 40, data.bank_address)
         c.drawString(self.margin, 30, data.membership)
-        c.drawRightString(self.width - self.margin, 30, f"Page {page_no} of {total_pages}")
+        c.drawRightString(TABLE_RIGHT, 30, f"Page {page_no} of {total_pages}")
         c.setFillColorRGB(0, 0, 0)
 
     def render(self, data: BankStatementData, output_path: str) -> str:
@@ -464,6 +532,235 @@ class BankStatementRenderer:
         return output_path
 
 
+def _render_bank_statement_pdf(
+    output_path: str,
+    account_holder: str,
+    account_last4: str,
+    routing: str,
+    bank_name: str,
+    statement_month: int,
+    statement_year: int,
+    transactions: list,
+    beginning_balance: float,
+    ending_balance: float,
+    style: str = "corporate",
+    account_address: str = "",
+) -> str:
+    """Field-level entry point.
+
+    `transactions` is a list of {date, description, credit, debit} dicts.
+    Running balances are computed here from `beginning_balance`, so the last
+    row always agrees with the summary block.
+    """
+    if style not in STYLES:
+        raise ValueError(f"Unknown style '{style}'. Choose from {list(STYLES)}.")
+
+    entries = [
+        Transaction(
+            date=t["date"],
+            description=t["description"],
+            amount=_money(t["credit"] if t.get("credit") else t["debit"]),
+            type="credit" if t.get("credit") else "debit",
+        )
+        for t in transactions
+    ]
+    month = _reconcile(entries, beginning_balance, statement_year, statement_month)
+
+    data = BankStatementData(
+        bank_name=bank_name,
+        style=style,
+        account_holder=account_holder,
+        account_number=f"****{account_last4}",
+        routing_number=routing,
+        address=account_address,
+        bank_address=STYLES[style]["address"],
+        membership=STYLES[style]["membership"],
+        months=[month],
+    )
+    return BankStatementStyleRenderer(style=style).render(data, output_path)
+
+
+class BankStatementRenderer:
+    """
+    Renders bank statements from a BorrowerProfile.
+
+    Deposits: profile.monthly_gross_income ± 3%
+    Recurring debts: exactly profile.monthly_X values
+    Ending balance: profile.checking_balance
+    Account holder: profile.full_name (SAME as W-2)
+    Payroll description: profile.employer_payroll_description
+    """
+
+    def __init__(
+        self,
+        profile: BorrowerProfile,
+        month: int = None,
+        style: str = None,
+    ):
+        self.profile = profile
+        self.month = month or profile.statement_month_1
+        if not 1 <= self.month <= 12:
+            raise ValueError(f"Month out of range: {self.month}")
+        self.style = style or "corporate"
+        if self.style not in STYLES:
+            raise ValueError(
+                f"Unknown style '{self.style}'. Choose from {list(STYLES)}."
+            )
+        self.rng = random.Random(
+            profile.seed * 43 + self.month
+        )
+
+    def render(self, output_path: str) -> str:
+        """Render one month bank statement PDF."""
+
+        # Build transactions from profile values
+        transactions = self._build_transactions()
+
+        _render_bank_statement_pdf(
+            output_path=output_path,
+            account_holder=self.profile.full_name,
+            account_last4=str(
+                (self.profile.seed % 9000) + 1000
+            ),
+            routing=self._generate_routing(),
+            bank_name=self._bank_name(),
+            statement_month=self.month,
+            statement_year=self.profile.tax_year,
+            transactions=transactions,
+            beginning_balance=self._beginning_balance(transactions),
+            ending_balance=self.profile.checking_balance,
+            style=self.style,
+            account_address=self.profile.full_address,
+        )
+        return output_path
+
+    def _generate_routing(self) -> str:
+        r = random.Random(self.profile.seed * 11)
+        return f"0{r.randint(10000000, 99999999)}"
+
+    def _bank_name(self) -> str:
+        return STYLES[self.style]["bank_name"]
+
+    def _beginning_balance(self, transactions: list) -> float:
+        """Beginning = ending - (deposits - withdrawals).
+
+        Derived rather than jittered, so the final running balance lands
+        exactly on profile.checking_balance and the statement reconciles
+        with the assets declared on the loan application.
+        """
+        net = sum(
+            (t["credit"] or 0.0) - (t["debit"] or 0.0)
+            for t in transactions
+        )
+        return _money(max(self.profile.checking_balance - net, 0.0))
+
+    def _build_transactions(self) -> list:
+        """
+        Build transaction list from profile values.
+
+        Recurring debts use EXACT profile values.
+        Payroll uses profile.monthly_gross_income ± 3%.
+        Variable spending is randomized.
+        """
+        transactions = []
+        month = self.month
+        year = self.profile.tax_year
+
+        days_in_month = calendar.monthrange(year, month)[1]
+
+        # ── Payroll deposit (1st or 15th) ────────────────
+        payroll_day = self.rng.choice([1, 15])
+        payroll_var = self.rng.uniform(0.97, 1.03)
+        payroll_amount = (
+            self.profile.monthly_gross_income * payroll_var
+        )
+        transactions.append({
+            "date": f"{month:02d}/{payroll_day:02d}/{year}",
+            "description": self.profile.employer_payroll_description,
+            "credit": round(payroll_amount, 2),
+            "debit": None,
+        })
+
+        # ── Recurring debts (EXACT from profile) ─────────
+        # Days are drawn from a profile-scoped generator so the same
+        # obligation falls on the same day of every month.
+        recurring_day_rng = random.Random(
+            self.profile.seed * 59
+        )
+
+        if self.profile.monthly_rent_mortgage > 0:
+            day = recurring_day_rng.randint(1, 5)
+            transactions.append({
+                "date": f"{month:02d}/{day:02d}/{year}",
+                "description": "RENT PAYMENT",
+                "credit": None,
+                "debit": round(
+                    self.profile.monthly_rent_mortgage, 2
+                ),
+            })
+
+        if self.profile.monthly_car_payment > 0:
+            day = recurring_day_rng.randint(6, 12)
+            transactions.append({
+                "date": f"{month:02d}/{day:02d}/{year}",
+                "description": "AUTO LOAN PMT",
+                "credit": None,
+                "debit": round(
+                    self.profile.monthly_car_payment, 2
+                ),
+            })
+
+        if self.profile.monthly_student_loan > 0:
+            day = recurring_day_rng.randint(13, 18)
+            transactions.append({
+                "date": f"{month:02d}/{day:02d}/{year}",
+                "description": "STUDENT LOAN PMT",
+                "credit": None,
+                "debit": round(
+                    self.profile.monthly_student_loan, 2
+                ),
+            })
+
+        if self.profile.monthly_credit_card_min > 0:
+            day = recurring_day_rng.randint(19, 25)
+            transactions.append({
+                "date": f"{month:02d}/{day:02d}/{year}",
+                "description": "CREDIT CARD MIN PMT",
+                "credit": None,
+                "debit": round(
+                    self.profile.monthly_credit_card_min, 2
+                ),
+            })
+
+        # ── Variable spending ─────────────────────────────
+        num_variable = self.rng.randint(8, 16)
+        variable_types = [
+            ("GROCERY STORE", 30, 180),
+            ("GAS STATION", 30, 75),
+            ("RESTAURANT", 12, 65),
+            ("ATM WITHDRAWAL", 60, 300),
+            ("ONLINE PURCHASE", 15, 180),
+        ]
+
+        for _ in range(num_variable):
+            desc, low, high = self.rng.choice(variable_types)
+            amount = round(self.rng.uniform(low, high), 2)
+            day = self.rng.randint(1, days_in_month)
+            transactions.append({
+                "date": f"{month:02d}/{day:02d}/{year}",
+                "description": desc,
+                "credit": None,
+                "debit": amount,
+            })
+
+        # Sort by date
+        transactions.sort(
+            key=lambda t: t["date"]
+        )
+
+        return transactions
+
+
 # ─── Public API ─────────────────────────────────────────────────────
 
 def generate_synthetic_bank_statement(
@@ -477,39 +774,51 @@ def generate_synthetic_bank_statement(
     debt_to_income_target: float = None,
 ) -> str:
     """
-    Generate a 2-month bank statement PDF.
+    Generate a bank statement PDF for one borrower.
+
+    Backward-compatible entry point. Now builds a BorrowerProfile and
+    renders statement_month_1 from it, so the statement's holder, employer,
+    income and obligations belong to one coherent borrower.
 
     Args:
       output_path: where to save the PDF
       seed: random seed (deterministic)
       style: corporate|regional|digital
-      annual_income: if provided, monthly deposits will be approximately
-        annual_income/12 (+/-5%). This ensures income consistency with the
-        W-2 generator.
-      statement_year: year for statements
-      statement_month_1: first month (1-12)
-      statement_month_2: second month (1-12)
-      debt_to_income_target: if provided, the loan-bearing recurring debts
-        (auto loan + student loan) are sized to this share of monthly income
-        rather than drawn at random — e.g. 0.07 puts roughly 7% of monthly
-        income into loan payments. Use it when a downstream DTI calculation
-        needs to be predictable. Requires annual_income to be meaningful.
+      annual_income: target annual income; monthly deposits are
+        annual_income/12 (+/-3%). Drawn from $35,000-$180,000 if omitted.
+      statement_year: year for the statement
+      statement_month_1: the month rendered (1-12)
+      statement_month_2: carried onto the profile for callers that render a
+        second month with BankStatementRenderer(profile, month=...)
+      debt_to_income_target: DTI the profile's liabilities are sized to.
+        Defaults to 0.36.
 
     Returns:
       output_path (the saved file)
     """
-    if style not in STYLES:
-        raise ValueError(f"Unknown style '{style}'. Choose from {list(STYLES)}.")
     for m in (statement_month_1, statement_month_2):
         if not 1 <= m <= 12:
             raise ValueError(f"Month out of range: {m}")
 
-    rng = random.Random(seed)
-    data = _build_statement_data(rng, style, annual_income,
-                                 statement_year, statement_month_1, statement_month_2,
-                                 debt_to_income_target)
-    renderer = BankStatementRenderer(style=style)
-    return renderer.render(data, output_path)
+    gen = FinancialCaseGenerator()
+    income = annual_income or (
+        random.Random(seed * 71).uniform(35000, 180000)
+    )
+    profile = gen.generate(
+        seed=seed,
+        annual_income=income,
+        loan_amount=320000,
+        property_value=420000,
+        dti_target=0.36 if debt_to_income_target is None
+        else debt_to_income_target,
+        tax_year=statement_year,
+        statement_month_1=statement_month_1,
+        statement_month_2=statement_month_2,
+    )
+    renderer = BankStatementRenderer(
+        profile, month=statement_month_1, style=style
+    )
+    return renderer.render(output_path)
 
 
 def generate_synthetic_bank_statement_batch(
@@ -529,8 +838,8 @@ def generate_synthetic_bank_statement_batch(
       seed_start: first seed (increments per doc)
       annual_incomes: list of target incomes (one per statement, for W-2 matching)
       style: if None, randomly varies style across corporate/regional/digital
-      debt_to_income_target: share of monthly income placed into loan-bearing
-        recurring debts; see generate_synthetic_bank_statement()
+      debt_to_income_target: DTI the profile's liabilities are sized to;
+        see generate_synthetic_bank_statement()
 
     Returns:
       list of output file paths

@@ -14,14 +14,25 @@ Consistency with the other generators in this package:
 
 Everything is derived from `seed`, so the same inputs always produce the same
 document.
+
+Since Sprint 5 the application is a VIEW of a BorrowerProfile — see
+LoanAppRenderer below. Identity, employment, income, assets and liabilities
+all come from the profile, so the 1003 describes the same borrower as the
+W-2 and the bank statement in the same packet.
 """
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional, List
 import os
 import random
+
+from realitydb_docs.profile import (
+    BorrowerProfile,
+    FinancialCaseGenerator,
+)
 
 # ── Palette ────────────────────────────────────────────────────────────
 SECTION_BG = (0x1a / 255, 0x3a / 255, 0x6b / 255)   # #1a3a6b
@@ -139,6 +150,10 @@ class LoanApplicationData:
 
 
 def _build_data(
+    # DEPRECATED since Sprint 5. Draws identity, employer and income
+    # independently of any BorrowerProfile — the defect Sprint 5 fixes. Kept
+    # only for callers that build a form from explicit values; do not wire it
+    # into new packet generation. Use LoanAppRenderer instead.
     rng: random.Random,
     annual_income: Optional[float],
     loan_amount: Optional[float],
@@ -479,6 +494,201 @@ class LoanApplicationRenderer:
         return output_path
 
 
+def _render_loan_app_pdf(
+    output_path: str,
+    # SECTION 1 — loan
+    loan_amount: float,
+    property_value: float,
+    ltv_ratio: float,
+    loan_purpose: str,
+    loan_type: str,
+    amortization_years: int,
+    # SECTION 2 — property
+    property_address: str,
+    # SECTION 3 — borrower
+    borrower_name: str,
+    borrower_ssn: str,
+    borrower_dob: date,
+    borrower_phone: str,
+    borrower_email: str,
+    borrower_address: str,
+    # SECTION 4 — employment
+    employer_name: str,
+    job_title: str,
+    employment_type: str,
+    years_at_job: float,
+    gross_monthly_income: float,
+    # SECTION 5 — assets
+    checking_balance: float,
+    savings_balance: float,
+    retirement_balance: float,
+    down_payment: float,
+    # SECTION 6 — liabilities
+    monthly_rent: float,
+    monthly_car: float,
+    monthly_student: float,
+    monthly_cc_min: float,
+    total_monthly_debt: float,
+    dti_ratio: float,
+    # Meta
+    tax_year: int,
+    # Form fields the 1003 carries but the profile does not model. Supplied
+    # by LoanAppRenderer from a profile-scoped generator so they stay
+    # deterministic; defaulted here so the field-level API stays usable.
+    property_city_state_zip: str = "",
+    rate_type: str = "Fixed",
+    application_date: str = "",
+    property_type: str = "Single Family",
+    property_use: str = "Primary Residence",
+    marital_status: str = "Single",
+    dependents: int = 0,
+    years_at_address: float = 0.0,
+    other_income: float = 0.0,
+    down_payment_source: str = "Savings",
+    monthly_other_debt: float = 0.0,
+    outstanding_judgments: str = "No",
+    bankruptcy_7yr: str = "No",
+    foreclosure_7yr: str = "No",
+    federal_debt_delinquent: str = "No",
+    credit_score: Optional[int] = None,
+) -> str:
+    """Field-level entry point for drawing one Form 1003 to `output_path`."""
+    data = LoanApplicationData(
+        loan_purpose=loan_purpose,
+        loan_amount=loan_amount,
+        loan_type=loan_type,
+        rate_type=rate_type,
+        amortization_term=f"{amortization_years} Years",
+        application_date=application_date,
+        property_address=property_address,
+        property_city_state_zip=property_city_state_zip,
+        property_type=property_type,
+        property_value=property_value,
+        property_use=property_use,
+        ltv_ratio=ltv_ratio,
+        borrower_name=borrower_name,
+        ssn=borrower_ssn,
+        date_of_birth=borrower_dob.strftime("%m/%d/%Y")
+        if hasattr(borrower_dob, "strftime") else str(borrower_dob),
+        marital_status=marital_status,
+        dependents=dependents,
+        current_address=borrower_address,
+        years_at_address=years_at_address,
+        phone=borrower_phone,
+        email=borrower_email,
+        employer_name=employer_name,
+        position=job_title,
+        employment_type=employment_type,
+        years_at_job=years_at_job,
+        gross_monthly_income=gross_monthly_income,
+        other_income=other_income,
+        checking_balance=checking_balance,
+        savings_balance=savings_balance,
+        retirement_balance=retirement_balance,
+        down_payment=down_payment,
+        down_payment_source=down_payment_source,
+        car_payment=monthly_car,
+        student_loan=monthly_student,
+        credit_card_minimum=monthly_cc_min,
+        other_debt=monthly_other_debt,
+        monthly_housing_payment=monthly_rent,
+        total_monthly_debt=total_monthly_debt,
+        estimated_dti=dti_ratio,
+        outstanding_judgments=outstanding_judgments,
+        bankruptcy_7yr=bankruptcy_7yr,
+        foreclosure_7yr=foreclosure_7yr,
+        federal_debt_delinquent=federal_debt_delinquent,
+        credit_score=credit_score,
+        tax_year=tax_year,
+    )
+    return LoanApplicationRenderer().render(data, output_path)
+
+
+class LoanAppRenderer:
+    """
+    Renders a loan application from a BorrowerProfile.
+    All fields come from the profile — nothing
+    is generated independently.
+    """
+
+    def __init__(self, profile: BorrowerProfile):
+        self.profile = profile
+        # Form-only fields the profile does not model (declarations, marital
+        # status, property type). Seeded off the profile so they are stable
+        # for a given borrower without competing with any profile value.
+        self._rng = random.Random(profile.seed * 61 + 9)
+
+    def render(self, output_path: str) -> str:
+        p = self.profile
+        rng = self._rng
+        _render_loan_app_pdf(
+            output_path=output_path,
+            # SECTION 1 — Loan
+            loan_amount=p.loan_amount,
+            property_value=p.property_value,
+            ltv_ratio=p.ltv_ratio,
+            loan_purpose=p.loan_purpose,
+            loan_type=p.loan_type,
+            amortization_years=p.amortization_years,
+            # SECTION 2 — Property
+            property_address=p.full_address,
+            # SECTION 3 — Borrower
+            borrower_name=p.full_name,
+            borrower_ssn=p.ssn,
+            borrower_dob=p.dob,
+            borrower_phone=p.phone,
+            borrower_email=p.email,
+            borrower_address=p.full_address,
+            # SECTION 4 — Employment
+            employer_name=p.employer_name,
+            job_title=p.job_title,
+            employment_type=p.employment_type,
+            years_at_job=p.years_at_job,
+            gross_monthly_income=p.monthly_gross_income,
+            # SECTION 5 — Assets
+            checking_balance=p.checking_balance,
+            savings_balance=p.savings_balance,
+            retirement_balance=p.retirement_balance,
+            down_payment=p.down_payment,
+            # SECTION 6 — Liabilities
+            monthly_rent=p.monthly_rent_mortgage,
+            monthly_car=p.monthly_car_payment,
+            monthly_student=p.monthly_student_loan,
+            monthly_cc_min=p.monthly_credit_card_min,
+            total_monthly_debt=p.total_monthly_debt,
+            dti_ratio=p.dti_ratio,
+            # Meta
+            tax_year=p.tax_year,
+            # Derived / form-only
+            property_city_state_zip=p.city_state_zip,
+            rate_type=_weighted(rng, [("Fixed", 80), ("ARM", 20)]),
+            application_date=(
+                f"{p.statement_month_2:02d}/"
+                f"{rng.randint(1, 28):02d}/{p.tax_year}"
+            ),
+            property_type=_weighted(rng, [("Single Family", 70),
+                                          ("Condominium", 20),
+                                          ("Multi-Family (2-4 units)", 10)]),
+            property_use=_weighted(rng, [("Primary Residence", 80),
+                                         ("Investment", 20)]),
+            marital_status=_weighted(rng, [("Married", 55), ("Single", 35),
+                                           ("Separated", 10)]),
+            dependents=rng.choice([0, 0, 1, 1, 2, 3]),
+            years_at_address=float(p.years_at_address),
+            other_income=0.0,
+            down_payment_source=_weighted(rng, [("Savings", 60),
+                                                ("Gift Funds", 25),
+                                                ("Sale of Property", 15)]),
+            monthly_other_debt=p.monthly_other_debt,
+            outstanding_judgments="Yes" if rng.random() < 0.05 else "No",
+            bankruptcy_7yr="Yes" if rng.random() < 0.10 else "No",
+            foreclosure_7yr="Yes" if rng.random() < 0.10 else "No",
+            federal_debt_delinquent="Yes" if rng.random() < 0.02 else "No",
+            credit_score=p.credit_score,
+        )
+        return output_path
+
+
 def generate_loan_application(
     output_path: str,
     seed: int = 42,
@@ -492,6 +702,10 @@ def generate_loan_application(
 ) -> str:
     """
     Generate a loan application PDF.
+
+    Backward-compatible entry point. Now builds a BorrowerProfile and renders
+    it through LoanAppRenderer, so the form's borrower is the same borrower
+    the W-2 and bank statement generators produce from the same seed.
 
     When annual_income is provided:
       monthly income matches +/-2%
@@ -509,14 +723,33 @@ def generate_loan_application(
     credit_score and monthly_housing_payment are optional underwriting
     extras: the real 1003 carries neither, but PacketWise reads both off the
     application, so they are printed when supplied and omitted when not.
+    monthly_housing_payment, when given, replaces the profile's derived
+    housing figure.
 
     Returns: output_path
     """
     rng = random.Random(seed)
-    data = _build_data(rng, annual_income, loan_amount, property_value,
-                       debt_to_income_target, tax_year, credit_score,
-                       monthly_housing_payment)
-    return LoanApplicationRenderer().render(data, output_path)
+    if annual_income is None:
+        annual_income = rng.uniform(36_000, 180_000)
+    if loan_amount is None:
+        loan_amount = round(rng.uniform(150_000, 750_000), -3)
+    if property_value is None:
+        # LTV lands in 70-90% by construction.
+        property_value = round(loan_amount / rng.uniform(0.70, 0.90), -3)
+
+    profile = FinancialCaseGenerator().generate(
+        seed=seed,
+        annual_income=annual_income,
+        loan_amount=loan_amount,
+        property_value=property_value,
+        dti_target=0.36 if debt_to_income_target is None
+        else debt_to_income_target,
+        tax_year=tax_year,
+        credit_score=credit_score,
+    )
+    if monthly_housing_payment is not None:
+        profile.monthly_rent_mortgage = round(monthly_housing_payment, 2)
+    return LoanAppRenderer(profile).render(output_path)
 
 
 def generate_loan_application_batch(
