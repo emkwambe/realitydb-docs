@@ -1,15 +1,15 @@
 # RealityDB Financial Cases — Starter Pack
 
-20 complete synthetic underwriting cases.
+50 complete synthetic underwriting cases.
 Thank you for your purchase.
 
 ## What Is Inside
 
-  8 approved borrowers
-  6 flagged borrowers (manual review)
-  6 rejected borrowers
+  20 approved borrowers
+  15 flagged borrowers (manual review)
+  15 rejected borrowers
 
-120 PDFs, 161 JSON files, 20 case READMEs, plus a
+300 PDFs, 401 JSON files, 50 case READMEs, plus a
 PACK_MANIFEST.json indexing every case with its
 borrower, income, DTI, LTV and expected decision.
 
@@ -149,7 +149,7 @@ No compliance review needed.
 Every case is generated from a seed. The same seed
 and the same generator version always reproduce
 the same case exactly. This pack uses seeds
-100-119, recorded in PACK_MANIFEST.json and in each
+100-149, recorded in PACK_MANIFEST.json and in each
 case's truth/case_manifest.json.
 
 ## Methodology
@@ -183,7 +183,7 @@ development and testing.
 
 ## Upgrade
 
-Professional Pack (50 cases + 10 timeline cases
+Professional Pack (150 cases + 10 timeline cases
 including A4 fraud): $799
 
 realitydb.dev/financial-cases/

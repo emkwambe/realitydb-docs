@@ -1,3 +1,10 @@
+> **NOTE: Pricing updated July 2026.**
+> Current pricing: **Starter $299 / 50 cases**, **Professional $799 / 150 cases**.
+> This supersedes earlier pricing in this document — including the pack table
+> in section 2 (100 cases / 500 cases) and the pricing page in section 15
+> ($1,250 Professional). The tier structure, case anatomy and taxonomy in this
+> document are unchanged and remain current.
+
 RealityDB Financial Case Intelligence
 
 The product should not be positioned as “a tool that generates financial PDFs.”

@@ -1,16 +1,16 @@
 # RealityDB Financial Cases — Professional Pack
 
-50 standard underwriting cases plus 10 timeline
+150 standard underwriting cases plus 10 timeline
 cases, including fraud injection.
 Thank you for your purchase.
 
 ## What Is Inside
 
-Standard cases (50):
+Standard cases (150):
 
-  20 approved borrowers
-  15 flagged borrowers (manual review)
-  15 rejected borrowers
+  60 approved borrowers
+  45 flagged borrowers (manual review)
+  45 rejected borrowers
 
 Timeline cases (10, in `timeline_cases/`):
 
@@ -18,7 +18,7 @@ Timeline cases (10, in `timeline_cases/`):
    3 financial stress   A0
    3 income inflation   A4 — fraud
 
-360 PDFs, 452 JSON files. Every case has its own
+960 PDFs, 1,252 JSON files. Every case has its own
 README.md; the pack has a PACK_MANIFEST.json
 indexing the standard cases, and the timeline
 cases have their own manifest.
@@ -101,7 +101,7 @@ at 8%.
 ## Alignment Classes
 
   A0   Perfectly aligned. Every material value
-       reconciles. All 50 standard cases and 7 of
+       reconciles. All 150 standard cases and 7 of
        the 10 timeline cases.
 
   A4   Probable manipulation. 3 timeline cases.
@@ -184,7 +184,7 @@ No compliance review needed.
 Every case is generated from a seed. The same seed
 and the same generator version always reproduce
 the same case exactly. Standard cases use seeds
-200-249; timeline cases use seeds 250-259.
+200-349; timeline cases use seeds 350-359.
 
 ## Methodology
 

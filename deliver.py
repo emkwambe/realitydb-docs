@@ -53,28 +53,35 @@ PACKS = {
         "price": "Free",
         "timeline_cases": 0,
         "readme": "README_FREE_SAMPLE.md",
+        "description": "5 cases, 30 PDFs",
     },
     "starter": {
-        "count": 20,
+        "count": 50,
         "seed_start": 100,
         "distribution": {
-            "approved": 8, "flagged": 6, "rejected": 6
+            "approved": 20, "flagged": 15, "rejected": 15
         },
         "name": "realitydb_starter_pack",
         "price": "$299",
         "timeline_cases": 0,
         "readme": "README_STARTER.md",
+        "description": "50 cases, 300 PDFs",
     },
     "professional": {
-        "count": 50,
+        "count": 150,
         "seed_start": 200,
         "distribution": {
-            "approved": 20, "flagged": 15, "rejected": 15
+            "approved": 60, "flagged": 45, "rejected": 45
         },
         "name": "realitydb_professional_pack",
         "price": "$799",
+        # Kept at 10. These are what make the tier's fraud claim true;
+        # generate_case_pack() raises on any alignment but A0, so without them
+        # the pack is 150 clean cases and the A4 copy on the pricing page and
+        # in README_PROFESSIONAL.md would be false.
         "timeline_cases": 10,
         "readme": "README_PROFESSIONAL.md",
+        "description": "150 cases + 10 timeline, 960 PDFs",
     },
 }
 
