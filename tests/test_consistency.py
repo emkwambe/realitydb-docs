@@ -1219,3 +1219,290 @@ def test_clean_timeline_world_equals_claimed(tmp_path):
         f"Clean timeline reported discrepancies: "
         f"{doc_truth['discrepancies']}"
     )
+
+
+# ── Decision derivation (Sprint 10) ───────────────────────
+
+
+@pytest.mark.consistency
+def test_derive_decision_approved():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import derive_decision
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=102000,
+        loan_amount=320000,
+        property_value=420000,
+        dti_target=0.36,
+    )
+    assert derive_decision(profile) == "approved", (
+        f"Expected approved, DTI={profile.dti_ratio:.3f}"
+    )
+
+
+@pytest.mark.consistency
+def test_derive_decision_flagged():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import derive_decision
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=74400,
+        loan_amount=380000,
+        property_value=460000,
+        dti_target=0.45,
+    )
+    assert derive_decision(profile) == "flagged", (
+        f"Expected flagged, DTI={profile.dti_ratio:.3f}"
+    )
+
+
+@pytest.mark.consistency
+def test_derive_decision_rejected():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import derive_decision
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=57600,
+        loan_amount=450000,
+        property_value=500000,
+        dti_target=0.55,
+    )
+    assert derive_decision(profile) == "rejected", (
+        f"Expected rejected, DTI={profile.dti_ratio:.3f}"
+    )
+
+
+@pytest.mark.consistency
+def test_derive_decision_uses_config_thresholds():
+    """
+    The bands must come from config/financial.yaml, not from literals.
+
+    Asserts the boundary directly: a state one basis point inside the QM
+    threshold is approved and one basis point outside it is flagged. If the
+    thresholds were hardcoded and financial.yaml changed, this moves.
+    """
+    from realitydb_docs.config import cfg
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import derive_decision
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=102000,
+        loan_amount=320000,
+        property_value=420000,
+        dti_target=0.36,
+    )
+
+    monthly = profile.monthly_gross_income
+
+    # Sit the borrower exactly on each side of the QM threshold by moving a
+    # single debt line; every other field stays as generated.
+    def at_dti(target):
+        other = (
+            target * monthly
+            - profile.monthly_rent_mortgage
+            - profile.monthly_car_payment
+            - profile.monthly_student_loan
+            - profile.monthly_credit_card_min
+        )
+        profile.monthly_other_debt = other
+        return profile
+
+    just_under = at_dti(cfg.dti_threshold_qm - 0.0001)
+    assert derive_decision(just_under) == "approved", (
+        f"DTI {just_under.dti_ratio:.4f} is inside the QM threshold "
+        f"{cfg.dti_threshold_qm} and must be approved"
+    )
+
+    just_over = at_dti(cfg.dti_threshold_qm + 0.0001)
+    assert derive_decision(just_over) == "flagged", (
+        f"DTI {just_over.dti_ratio:.4f} is outside the QM threshold "
+        f"{cfg.dti_threshold_qm} and must be flagged"
+    )
+
+    past_ceiling = at_dti(cfg.dti_threshold_max + 0.0001)
+    assert derive_decision(past_ceiling) == "rejected", (
+        f"DTI {past_ceiling.dti_ratio:.4f} is past the ceiling "
+        f"{cfg.dti_threshold_max} and must be rejected"
+    )
+
+
+@pytest.mark.consistency
+def test_career_growth_final_decision_from_state():
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        career_growth_timeline,
+        derive_decision,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=72000,
+        loan_amount=320000,
+        property_value=420000,
+        dti_target=0.36,
+        scenario="approved",
+    )
+
+    timeline = career_growth_timeline(profile, months=18)
+    final = timeline.world_state_at(18)
+
+    derived = derive_decision(final)
+
+    # Career growth should result in approved
+    # (DTI improves through promotion and raise)
+    assert derived == "approved", (
+        f"Career growth final DTI {final.dti_ratio:.3f} "
+        f"should be approved, got {derived}"
+    )
+
+
+@pytest.mark.consistency
+def test_stress_timeline_decision_moves_off_its_label():
+    """
+    The decision must follow the evolved state, not the starting label.
+
+    financial_stress starts at a 45% DTI target — 'flagged' — and the layoff
+    plus the medical-bill payment plan push it past the 50% ceiling by month
+    18. Before Sprint 10 the case still shipped 'flagged', because the label
+    was carried rather than derived. This is the regression gate on that.
+    """
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        derive_decision,
+        financial_stress_timeline,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=74400,
+        loan_amount=380000,
+        property_value=460000,
+        dti_target=0.45,
+        scenario="flagged",
+    )
+    timeline = financial_stress_timeline(profile, months=18)
+
+    start = timeline.world_state_at(0)
+    final = timeline.world_state_at(18)
+
+    assert derive_decision(start) == "flagged", (
+        f"Start DTI {start.dti_ratio:.3f} should be flagged"
+    )
+    assert derive_decision(final) == "rejected", (
+        f"Final DTI {final.dti_ratio:.3f} should be rejected after the "
+        f"layoff and medical bill"
+    )
+    # The scenario label on the profile is untouched — it is context.
+    assert profile.expected_decision == "flagged", (
+        "derive_decision must not write back onto the profile"
+    )
+
+
+@pytest.mark.consistency
+def test_fraud_decision_grades_world_not_claim(tmp_path):
+    """
+    A borrower who overstates income is graded on reality.
+
+    Deriving from the claimed state would let the overstatement buy a better
+    expected decision, which is backwards for a fraud fixture.
+    """
+    import json
+
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        TimelineCaseBundler,
+        derive_decision,
+        income_inflation_fraud_timeline,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=57600,
+        loan_amount=450000,
+        property_value=500000,
+        dti_target=0.55,
+        scenario="rejected",
+    )
+    timeline = income_inflation_fraud_timeline(profile, months=18)
+
+    world = timeline.world_state_at(18)
+    claimed = timeline.claimed_state_at(18)
+
+    # The inflated income lowers the claimed DTI, so grading the claim is
+    # strictly more generous. Confirm the two differ before asserting which
+    # one is used.
+    assert claimed.dti_ratio < world.dti_ratio, (
+        "the inflated claim should look better than reality"
+    )
+
+    case_dir = TimelineCaseBundler().generate_timeline_case(
+        timeline=timeline, output_dir=str(tmp_path)
+    )
+    with open(
+        os.path.join(case_dir, "evaluation", "expected_decision.json"),
+        encoding="utf-8",
+    ) as fh:
+        decision = json.load(fh)
+
+    assert decision["expected_decision"] == derive_decision(world), (
+        "expected_decision must be derived from the world state"
+    )
+    assert decision["dti_ratio"] == round(world.dti_ratio, 4), (
+        "the DTI reported alongside the decision must be the world DTI"
+    )
+
+
+@pytest.mark.consistency
+def test_fraud_timeline_decision_reflects_real_state(tmp_path):
+    import json
+
+    from realitydb_docs.profile import FinancialCaseGenerator
+    from realitydb_docs.timeline import (
+        TimelineCaseBundler,
+        income_inflation_fraud_timeline,
+    )
+
+    gen = FinancialCaseGenerator()
+    profile = gen.generate(
+        seed=42,
+        annual_income=57600,
+        loan_amount=450000,
+        property_value=500000,
+        dti_target=0.55,
+        scenario="rejected",
+    )
+
+    timeline = income_inflation_fraud_timeline(profile, months=18)
+
+    bundler = TimelineCaseBundler()
+    case_dir = bundler.generate_timeline_case(
+        timeline=timeline,
+        output_dir=str(tmp_path),
+    )
+    with open(
+        os.path.join(case_dir, "evaluation", "expected_decision.json"),
+        encoding="utf-8",
+    ) as fh:
+        decision = json.load(fh)
+
+    assert decision.get("decision_basis") == (
+        "derived_from_evolved_state"
+    ), "Decision not derived from evolved state"
+
+    assert decision.get("fraud_present") is True, (
+        "Fraud not flagged in fraud timeline"
+    )
+
+    # The starting label is retained as context, not as the decision.
+    assert decision.get("starting_scenario") == "rejected"

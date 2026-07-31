@@ -113,13 +113,19 @@ Usage:
 A note on the expected decision
 -------------------------------
 `profile.expected_decision` is the scenario label the
-timeline started from. It is NOT recomputed from the
-evolved state — a career-growth timeline that improves
-DTI still carries the label it began with. Every file
-this module writes says so rather than implying the
-decision was derived. Deriving it is the obvious next
-sprint; asserting it here would be a claim the code
-does not support.
+timeline started from, and stays that way — the profile
+is derived, never patched.
+
+The decision written into the evaluation layer is
+computed by `derive_decision()` from the WORLD state at
+the application month, against the thresholds in
+config/financial.yaml. So a career-growth borrower whose
+DTI improves from 36% to 34.2% is approved because the
+evolved state earns it, not because it started that way,
+and a borrower who overstates income is still graded on
+what is true. Both files carry
+`decision_basis: derived_from_evolved_state` alongside
+`starting_scenario` so the two are never confused.
 """
 
 import copy
@@ -131,12 +137,48 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
 
+from realitydb_docs.config import cfg
 from realitydb_docs.profile import (
     BorrowerProfile,
     FinancialCaseGenerator,
 )
 
-GENERATOR_VERSION = "0.6.0"
+GENERATOR_VERSION = "0.7.0"
+
+
+# ── Decision derivation ───────────────────────────────────
+
+def derive_decision(profile: BorrowerProfile) -> str:
+    """
+    Derive the underwriting decision from a financial state.
+
+    Uses the thresholds in config/financial.yaml:
+      dti_threshold_qm  0.43
+      dti_threshold_max 0.50
+      ltv_threshold     0.80
+
+    Returns: approved / flagged / rejected
+
+    Always call this on the WORLD state. A borrower who overstates income is
+    graded on what is true, not on what they claimed — grading the claim would
+    reward the overstatement with a better expected decision, which is the
+    opposite of what a fraud case is for.
+
+    This is deliberately NOT PacketWise's decision function. PacketWise decides
+    on violation severity (any critical -> rejected, any warning -> flagged);
+    this decides on the DTI and LTV bands. The two agree on ordinary files and
+    diverge on a fraud file, where an income overstatement is a warning to the
+    engine but the underlying DTI is already past the ceiling. That divergence
+    is the signal, not a defect — see docs/sprints/SPRINT-010-decision-engine.md.
+    """
+    dti = profile.dti_ratio
+    ltv = profile.ltv_ratio
+
+    if dti > cfg.dti_threshold_max:
+        return "rejected"
+    if dti > cfg.dti_threshold_qm or ltv > cfg.ltv_threshold:
+        return "flagged"
+    return "approved"
 
 
 # ── Event types ───────────────────────────────────────────
@@ -926,12 +968,12 @@ class BorrowerTimeline:
                 "dti_ratio": round(
                     self.final_state.dti_ratio, 4
                 ),
-                "expected_decision": (
-                    self.final_state.expected_decision
+                "expected_decision": derive_decision(
+                    self.world_state_at(self.months)
                 ),
-                "expected_decision_basis": (
-                    "Scenario label carried from the starting profile. "
-                    "It is not recomputed from the evolved state."
+                "decision_basis": "derived_from_evolved_state",
+                "starting_scenario": (
+                    self.final_state.expected_decision
                 ),
             },
         }
@@ -1426,13 +1468,24 @@ class TimelineCaseBundler:
                 )
             return "Anomaly labelled by the case author"
 
+        # Derived from the WORLD state, never from the claimed one: a borrower
+        # who overstates income is graded on what is true. Computed here rather
+        # than written onto the profile — BorrowerProfile is derived, never
+        # patched, and `expected_decision` on it stays the scenario label the
+        # timeline started from.
+        derived_decision = derive_decision(world_profile)
+
         causal_evidence = {
-            "expected_decision": (
-                world_profile.expected_decision
-            ),
-            "expected_decision_basis": (
-                "Scenario label carried from the starting profile; not "
-                "recomputed from the evolved state."
+            "expected_decision": derived_decision,
+            "decision_basis": "derived_from_evolved_state",
+            "starting_scenario": world_profile.expected_decision,
+            "decision_note": (
+                f"Computed from DTI "
+                f"{world_profile.dti_ratio:.1%} and LTV "
+                f"{world_profile.ltv_ratio:.1%} of the world state at month "
+                f"{app_month}, after all life events. The timeline started "
+                f"from the '{world_profile.expected_decision}' scenario; that "
+                f"label is context, not the decision."
             ),
             "application_month": app_month,
             "alignment_class": timeline.alignment_class,
@@ -1481,13 +1534,24 @@ class TimelineCaseBundler:
 
         # expected_decision.json
         decision = {
-            "expected_decision": (
-                world_profile.expected_decision
+            "expected_decision": derived_decision,
+            "decision_basis": "derived_from_evolved_state",
+            "starting_scenario": world_profile.expected_decision,
+            "note": (
+                f"Decision computed from final DTI and LTV after all life "
+                f"events applied, against the thresholds in "
+                f"config/financial.yaml (QM DTI "
+                f"{cfg.dti_threshold_qm:.0%}, max DTI "
+                f"{cfg.dti_threshold_max:.0%}, LTV "
+                f"{cfg.ltv_threshold:.0%}). Derived from the WORLD state, so "
+                f"an overstated income does not improve it. Starting scenario "
+                f"was '{world_profile.expected_decision}'."
             ),
-            "expected_decision_basis": (
-                "Scenario label carried from the starting profile; not "
-                "recomputed from the evolved state."
-            ),
+            "thresholds": {
+                "dti_threshold_qm": cfg.dti_threshold_qm,
+                "dti_threshold_max": cfg.dti_threshold_max,
+                "ltv_threshold": cfg.ltv_threshold,
+            },
             "dti_ratio": round(
                 world_profile.dti_ratio, 4
             ),
@@ -1605,12 +1669,16 @@ month {app_month}. What the application *states* may differ; see below.
 | LTV | {world_profile.ltv_ratio:.1%} |
 | DTI (world) | {world_profile.dti_ratio:.1%} |
 | DTI (as declared) | {claimed_profile.dti_ratio:.1%} |
-| Expected Decision | **{world_profile.expected_decision.upper()}** |
+| Expected Decision | **{derive_decision(world_profile).upper()}** |
+| Starting Scenario | {world_profile.expected_decision} |
 | Fraud Present | {fraud_cell} |
 | Alignment Class | {alignment_cell} |
 
-The expected decision is the scenario label this timeline started from. It is
-not recomputed from the evolved state.
+The expected decision is **derived** from the world state at month {app_month} —
+DTI {world_profile.dti_ratio:.1%} and LTV {world_profile.ltv_ratio:.1%} against
+the thresholds in `config/financial.yaml`. The starting scenario is context
+only. Deriving from the world state rather than the claimed one means an
+overstated income cannot improve the expected decision.
 
 ### Document discrepancies
 
@@ -1765,7 +1833,8 @@ def generate_timeline_pack(
             "events": len(timeline.events),
             "world_dti_ratio": round(world.dti_ratio, 4),
             "alignment_class": timeline.alignment_class,
-            "expected_decision": world.expected_decision,
+            "expected_decision": derive_decision(world),
+            "starting_scenario": world.expected_decision,
         })
 
         print(
@@ -1774,6 +1843,7 @@ def generate_timeline_pack(
             f"{tl_type:20s} | "
             f"{world.full_name:20s} | "
             f"DTI {world.dti_ratio:.1%} | "
+            f"{derive_decision(world):8s} | "
             f"{timeline.alignment_class}"
         )
 
